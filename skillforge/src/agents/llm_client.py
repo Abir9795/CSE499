@@ -10,7 +10,7 @@ else:
 
 
 class LLMClient:
-    def __init__(self, model="qwen2.5-coder:3b"):
+    def __init__(self, model="qwen2.5-coder:7b"):
         self.model = model
 
     def generate(self, prompt, system=None, temperature=0.2):

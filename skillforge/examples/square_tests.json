@@ -1,0 +1,32 @@
+[
+  {
+    "input": "5",
+    "expected_output": "25",
+    "category": "normal"
+  },
+  {
+    "input": "12",
+    "expected_output": "144",
+    "category": "normal"
+  },
+  {
+    "input": "-4",
+    "expected_output": "16",
+    "category": "normal"
+  },
+  {
+    "input": "0",
+    "expected_output": "0",
+    "category": "edge"
+  },
+  {
+    "input": "1",
+    "expected_output": "1",
+    "category": "edge"
+  },
+  {
+    "input": "1000000",
+    "expected_output": "1000000000000",
+    "category": "stress"
+  }
+]

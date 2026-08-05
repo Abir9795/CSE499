@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List
-import json
+from src.utils.parsing import parse_json_response
+
 
 @dataclass
 class TaskSpec:
@@ -8,6 +9,7 @@ class TaskSpec:
     problem_type: str
     constraints: str
     examples: List[dict] = field(default_factory=list)
+
 
 def parse_task(client, problem_statement: str) -> TaskSpec:
     system = """You are a problem analyzer. Given a coding problem, output ONLY valid JSON with keys:
@@ -17,8 +19,7 @@ examples (list of {"input": ..., "output": ...} from the problem, max 3).
 No explanation, no markdown, just the JSON object."""
 
     raw = client.generate(problem_statement, system=system, temperature=0.0)
-    raw = raw.strip().strip("```json").strip("```").strip()
-    parsed = json.loads(raw)
+    parsed = parse_json_response(raw)
 
     return TaskSpec(
         problem_statement=problem_statement,

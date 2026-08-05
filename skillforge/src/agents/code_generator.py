@@ -1,9 +1,12 @@
 from dataclasses import dataclass
+from src.utils.parsing import strip_markdown_fence
+
 
 @dataclass
 class CodeCandidate:
     raw_code: str
     problem_type: str
+
 
 def generate_code(client, task_spec, temperature=0.2):
     system = """You are a competitive programmer. Output ONLY a complete, runnable Python solution.
@@ -16,6 +19,6 @@ Examples: {task_spec.examples}
 Write a complete Python solution."""
 
     raw = client.generate(prompt, system=system, temperature=temperature)
-    code = raw.strip().strip("```python").strip("```").strip()
+    code = strip_markdown_fence(raw)
 
     return CodeCandidate(raw_code=code, problem_type=task_spec.problem_type)
