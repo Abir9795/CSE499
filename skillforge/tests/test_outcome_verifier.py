@@ -14,6 +14,9 @@ class OutcomeVerifierTests(unittest.TestCase):
 
         self.assertEqual(result.passed, 1)
         self.assertEqual(result.pass_rate, 1.0)
+        self.assertEqual(len(result.case_results), 1)
+        self.assertTrue(result.case_results[0].passed)
+        self.assertIs(result.execution_results[0], result.case_results[0].execution)
 
     def test_reports_structured_expected_output_on_failure(self):
         suite = GeneratedSuite([

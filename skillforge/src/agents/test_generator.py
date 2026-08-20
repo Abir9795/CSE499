@@ -5,6 +5,23 @@ from src.utils.parsing import parse_json_response
 
 VALID_CATEGORIES = frozenset({"normal", "edge", "stress"})
 REQUIRED_FIELDS = frozenset({"input", "expected_output", "category"})
+TEST_SUITE_RESPONSE_SCHEMA = {
+    "type": "array",
+    "minItems": 1,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["input", "expected_output", "category"],
+        "properties": {
+            "input": {"type": "string"},
+            "expected_output": {"type": "string"},
+            "category": {
+                "type": "string",
+                "enum": ["normal", "edge", "stress"],
+            },
+        },
+    },
+}
 
 
 @dataclass
@@ -119,7 +136,21 @@ Your previous test response was rejected: {last_error}
 Previous response: {previous_response[:2000]}
 Generate the entire corrected JSON list again."""
 
-        raw = client.generate(prompt, system=system, temperature=0.2)
+        generate_json = getattr(client, "generate_json", None)
+
+        if callable(generate_json):
+            raw = generate_json(
+                prompt,
+                system=system,
+                temperature=0.2,
+                schema=TEST_SUITE_RESPONSE_SCHEMA,
+            )
+        else:
+            raw = client.generate(
+                prompt,
+                system=system,
+                temperature=0.2,
+            )
         try:
             parsed = parse_json_response(raw)
             return build_test_suite(
@@ -127,7 +158,7 @@ Generate the entire corrected JSON list again."""
                 allow_empty_input=allow_empty_input,
             )
         except (TypeError, ValueError) as exc:
-            previous_response = raw
+            previous_response = raw if isinstance(raw, str) else repr(raw)
             last_error = str(exc)
 
     raise ValueError(

@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 import os
 import sys
+from time import perf_counter
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, List
@@ -20,6 +21,7 @@ class ExecutionResult:
     stdout: str
     stderr: str
     exit_code: int
+    duration_seconds: float = 0.0
 
 
 def _normalize_input(stdin_input: Any) -> str:
@@ -32,7 +34,11 @@ def _normalize_input(stdin_input: Any) -> str:
     return str(stdin_input)
 
 
-def run_code_many(code: str, stdin_inputs: List[Any], timeout: int = 5) -> List[ExecutionResult]:
+def run_code_many(
+    code: str,
+    stdin_inputs: List[Any],
+    timeout: float = 5,
+) -> List[ExecutionResult]:
     """Write a candidate once, then execute it independently for every input."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
         f.write(code)
@@ -41,6 +47,7 @@ def run_code_many(code: str, stdin_inputs: List[Any], timeout: int = 5) -> List[
     try:
         results = []
         for stdin_input in stdin_inputs:
+            started_at = perf_counter()
             try:
                 proc = subprocess.run(
                     [sys.executable, path],
@@ -49,14 +56,32 @@ def run_code_many(code: str, stdin_inputs: List[Any], timeout: int = 5) -> List[
                     text=True,
                     timeout=timeout,
                 )
+                duration = perf_counter() - started_at
                 status = Status.PASS if proc.returncode == 0 else Status.ERROR
-                results.append(ExecutionResult(status, proc.stdout, proc.stderr, proc.returncode))
+                results.append(
+                    ExecutionResult(
+                        status,
+                        proc.stdout,
+                        proc.stderr,
+                        proc.returncode,
+                        duration,
+                    )
+                )
             except subprocess.TimeoutExpired:
-                results.append(ExecutionResult(Status.TIMEOUT, "", "Execution timed out", -1))
+                duration = perf_counter() - started_at
+                results.append(
+                    ExecutionResult(
+                        Status.TIMEOUT,
+                        "",
+                        "Execution timed out",
+                        -1,
+                        duration,
+                    )
+                )
         return results
     finally:
         os.unlink(path)
 
 
-def run_code(code: str, stdin_input: str = "", timeout: int = 5) -> ExecutionResult:
+def run_code(code: str, stdin_input: str = "", timeout: float = 5) -> ExecutionResult:
     return run_code_many(code, [stdin_input], timeout=timeout)[0]

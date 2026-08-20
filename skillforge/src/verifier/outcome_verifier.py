@@ -1,7 +1,18 @@
 from dataclasses import dataclass, field
 import json
 from typing import Any, List, Optional
-from src.verifier.sandbox import run_code_many, Status
+
+from src.verifier.sandbox import ExecutionResult, run_code_many, Status
+
+
+@dataclass
+class TestCaseVerification:
+    input: Any
+    expected: str
+    actual: str
+    category: str
+    passed: bool
+    execution: ExecutionResult
 
 
 @dataclass
@@ -11,6 +22,12 @@ class VerificationResult:
     passed: int
     first_failure: Optional[dict] = None
     failures: List[dict] = field(default_factory=list)
+    case_results: List[TestCaseVerification] = field(default_factory=list)
+
+    @property
+    def execution_results(self) -> List[ExecutionResult]:
+        """Expose the exact executions shared by deterministic graders."""
+        return [case_result.execution for case_result in self.case_results]
 
 
 def _display_output(value: Any) -> str:
@@ -32,23 +49,44 @@ def _outputs_match(actual: str, expected: Any) -> bool:
         return False
 
 
-def verify(code: str, test_suite, max_failures: int = 3) -> VerificationResult:
+def verify(
+    code: str,
+    test_suite,
+    max_failures: int = 3,
+    timeout: float = 5,
+) -> VerificationResult:
     """Score a candidate and retain a bounded set of repair examples."""
     if max_failures < 0:
         raise ValueError("max_failures must be zero or greater")
 
     passed = 0
     failures = []
+    case_results = []
     execution_results = run_code_many(
         code,
         [case.input for case in test_suite.cases],
+        timeout=timeout,
     )
 
     for case, result in zip(test_suite.cases, execution_results):
         actual = result.stdout.strip()
         expected = _display_output(case.expected_output)
 
-        if result.status == Status.PASS and _outputs_match(actual, case.expected_output):
+        case_passed = result.status == Status.PASS and _outputs_match(
+            actual, case.expected_output
+        )
+        case_results.append(
+            TestCaseVerification(
+                input=case.input,
+                expected=expected,
+                actual=actual,
+                category=case.category,
+                passed=case_passed,
+                execution=result,
+            )
+        )
+
+        if case_passed:
             passed += 1
         elif len(failures) < max_failures:
             failures.append({
@@ -57,6 +95,9 @@ def verify(code: str, test_suite, max_failures: int = 3) -> VerificationResult:
                 "actual": actual,
                 "stderr": result.stderr,
                 "status": result.status.value,
+                "category": case.category,
+                "exit_code": result.exit_code,
+                "duration_seconds": result.duration_seconds,
             })
 
     total = len(test_suite.cases)
@@ -66,4 +107,5 @@ def verify(code: str, test_suite, max_failures: int = 3) -> VerificationResult:
         passed=passed,
         first_failure=failures[0] if failures else None,
         failures=failures,
+        case_results=case_results,
     )

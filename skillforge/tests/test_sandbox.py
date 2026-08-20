@@ -8,6 +8,7 @@ class SandboxTests(unittest.TestCase):
         result = run_code("import sys\nprint(sys.stdin.read())", stdin_input=[1, 2, 3])
         self.assertEqual(result.status, Status.PASS)
         self.assertEqual(result.stdout.strip(), "1\n2\n3")
+        self.assertGreaterEqual(result.duration_seconds, 0.0)
 
     def test_run_code_many_reuses_candidate_file(self):
         results = run_code_many(
