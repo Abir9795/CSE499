@@ -1,7 +1,7 @@
 import argparse
 import json
 
-from src.agents.llm_client import LLMClient
+from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
 from src.benchmark import DEFAULT_BENCHMARK_PATH, load_benchmark, run_benchmark
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
 
@@ -15,7 +15,7 @@ def print_task(result) -> None:
     )
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a fixed SkillForge prompt on a trusted benchmark."
     )
@@ -46,9 +46,28 @@ def main() -> None:
             "When omitted, each task gets its own LLM-selected budget."
         ),
     )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama model that generates and repairs code (default: {DEFAULT_MODEL}).",
+    )
     parser.add_argument("--llm-judge", action="store_true")
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help=(
+            "Ollama model for the advisory judge, which must come from a "
+            "different family than --model so it is not grading its own "
+            f"output. Implies --llm-judge (default when judging: {DEFAULT_JUDGE_MODEL})."
+        ),
+    )
     parser.add_argument("--history-db", default=str(DEFAULT_HISTORY_PATH))
     parser.add_argument("--no-history", action="store_true")
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     history_store = None
@@ -56,7 +75,13 @@ def main() -> None:
         dataset = load_benchmark(args.benchmark)
         if not args.no_history:
             history_store = ExperimentStore(args.history_db)
-        client = LLMClient()
+        client, judge_client = build_clients(
+            model=args.model,
+            judge_model=args.judge_model,
+            llm_judge=args.llm_judge,
+        )
+        print("Generator model:", client.model)
+        print("Judge model:", judge_client.model if judge_client else "disabled")
         summary = run_benchmark(
             client,
             dataset,
@@ -64,7 +89,7 @@ def main() -> None:
             categories=args.category,
             prompt_id=args.prompt_id,
             max_attempts=args.max_attempts,
-            judge_client=client if args.llm_judge else None,
+            judge_client=judge_client,
             history_store=history_store,
             on_task_complete=print_task,
         )

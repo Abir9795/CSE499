@@ -5,3 +5,8 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 skillforge/data/*.sqlite3*
+*.pptx
+*.docx
+*.pdf
+*.md
+!README.md

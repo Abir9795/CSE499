@@ -9,8 +9,12 @@ else:
     _OLLAMA_IMPORT_ERROR = None
 
 
+DEFAULT_MODEL = "qwen2.5-coder:7b"
+DEFAULT_JUDGE_MODEL = "llama3.1:8b"
+
+
 class LLMClient:
-    def __init__(self, model="qwen2.5-coder:7b"):
+    def __init__(self, model=DEFAULT_MODEL):
         self.model = model
 
     def generate(self, prompt, system=None, temperature=0.2):
@@ -70,3 +74,54 @@ class LLMClient:
         raise RuntimeError(
             "LLM client failed to generate a response. Check your LLM service is running."
         )
+
+
+def build_clients(model=None, judge_model=None, llm_judge=False):
+    """Return (generator_client, judge_client) for one run.
+
+    The judge is a separate client so it can run a model from a different
+    family than the generator; a judge sharing the generator's family is a
+    model grading its own output. The judge client is None when the judge
+    is off, and naming a judge model is enough to turn it on.
+    """
+    generator = LLMClient(model or DEFAULT_MODEL)
+    if not (llm_judge or judge_model):
+        return generator, None
+    return generator, LLMClient(judge_model or DEFAULT_JUDGE_MODEL)
+
+
+class CallCountingClient:
+    """Count model calls made through any client, real or a test double.
+
+    The counter sits at the client boundary rather than inside LLMClient so
+    that it also counts calls made by test doubles, and so that the retries
+    inside the judge and the test generator are counted without either
+    module knowing about it.
+
+    Attribute access forwards to the wrapped client, which matters for more
+    than convenience: the judge and the test generator both branch on
+    whether `generate_json` exists. Forwarding through __getattr__ keeps a
+    missing method missing instead of pushing a `generate`-only client down
+    the JSON path.
+    """
+
+    def __init__(self, inner):
+        # Bind first, so no attribute lookup reaches __getattr__ before
+        # _inner exists and recurses forever.
+        self._inner = inner
+        self.call_count = 0
+
+    def __getattr__(self, name):
+        attribute = getattr(self._inner, name)
+        if name in ("generate", "generate_json") and callable(attribute):
+            return self._counted(attribute)
+        return attribute
+
+    def _counted(self, method):
+        def call(*args, **kwargs):
+            # Count before delegating, so a call that raises still counts as
+            # compute spent.
+            self.call_count += 1
+            return method(*args, **kwargs)
+
+        return call

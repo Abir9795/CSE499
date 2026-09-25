@@ -9,8 +9,33 @@ from typing import Iterable, Optional, Tuple
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# Columns added to `runs` after schema version 1, applied additively on
+# every open. Later schema versions append here rather than writing a new
+# migration; see _ensure_runs_columns.
+RUNS_ADDED_COLUMNS = (
+    ("attempt_budget", "INTEGER"),
+    ("attempt_budget_source", "TEXT"),
+    ("attempt_budget_reason", "TEXT"),
+    ("judge_model", "TEXT"),
+    ("config_name", "TEXT"),
+    ("seed", "INTEGER"),
+    ("language", "TEXT"),
+    ("model_calls", "INTEGER"),
+    ("wall_clock_seconds", "REAL"),
+)
 VALID_BENCHMARK_SPLITS = frozenset({"adhoc", "train", "validation", "hidden"})
+# The experiment arms of the results grid. Validated on the way in so a
+# mistyped arm fails at run start rather than filing a whole sweep under a
+# name no analysis query matches.
+VALID_CONFIG_NAMES = frozenset({
+    "single_shot",
+    "best_of_n",
+    "scalar_repair",
+    "full",
+    "retrieval",
+})
+VALID_PROMPT_DECISIONS = frozenset({"promoted", "rejected"})
 VALID_TEST_SOURCES = frozenset({"generated", "trusted"})
 DEFAULT_HISTORY_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "experiments.sqlite3"
@@ -105,6 +130,13 @@ class ExperimentStore:
                     model_name TEXT NOT NULL,
                     test_source TEXT NOT NULL,
                     judge_enabled INTEGER NOT NULL,
+                    -- model_name is the generator; judge_model is the grader.
+                    judge_model TEXT,
+                    config_name TEXT,
+                    seed INTEGER,
+                    language TEXT,
+                    model_calls INTEGER,
+                    wall_clock_seconds REAL,
                     attempt_budget INTEGER,
                     attempt_budget_source TEXT,
                     attempt_budget_reason TEXT,
@@ -152,47 +184,75 @@ class ExperimentStore:
                         REFERENCES attempts(run_id, attempt_number) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS prompt_experiments (
+                    experiment_id TEXT PRIMARY KEY,
+                    baseline_prompt_id TEXT NOT NULL,
+                    candidate_prompt_id TEXT NOT NULL,
+                    benchmark_split TEXT NOT NULL,
+                    task_count INTEGER NOT NULL,
+                    baseline_pass_rate REAL NOT NULL,
+                    candidate_pass_rate REAL NOT NULL,
+                    -- McNemar's discordant pairs, named rather than b and c.
+                    candidate_only_passes INTEGER NOT NULL,
+                    baseline_only_passes INTEGER NOT NULL,
+                    p_value REAL NOT NULL,
+                    decision TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_runs_split_prompt
                     ON runs(benchmark_split, prompt_version);
                 CREATE INDEX IF NOT EXISTS idx_signals_category
                     ON failure_signals(category, strength);
+                CREATE INDEX IF NOT EXISTS idx_prompt_experiments_candidate
+                    ON prompt_experiments(candidate_prompt_id);
             """)
             row = self._connection.execute(
                 "SELECT value FROM metadata WHERE key = 'schema_version'"
             ).fetchone()
+            if row is not None and not self._is_supported_version(row["value"]):
+                raise ExperimentStoreError(
+                    "unsupported experiment-history schema version: "
+                    f"{row['value']}"
+                )
+            self._ensure_runs_columns()
             if row is None:
                 self._connection.execute(
                     "INSERT INTO metadata(key, value) VALUES('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
                 )
-            elif row["value"] == "1":
-                self._migrate_v1_to_v2()
             elif row["value"] != str(SCHEMA_VERSION):
-                raise ExperimentStoreError(
-                    "unsupported experiment-history schema version: "
-                    f"{row['value']}"
+                self._connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
+                    (str(SCHEMA_VERSION),),
                 )
 
-    def _migrate_v1_to_v2(self) -> None:
-        """Preserve existing history while adding attempt-budget metadata."""
+    @staticmethod
+    def _is_supported_version(value) -> bool:
+        """Accept any past version this build can still migrate forward."""
+        try:
+            version = int(value)
+        except (TypeError, ValueError):
+            return False
+        return 1 <= version <= SCHEMA_VERSION
+
+    def _ensure_runs_columns(self) -> None:
+        """Add any RUNS_ADDED_COLUMNS the database does not have yet.
+
+        This runs on every open rather than only when the stored version
+        changes, so a database already stamped with the current version
+        still gains columns appended to the list after it was written.
+        """
         existing_columns = {
             row["name"]
             for row in self._connection.execute("PRAGMA table_info(runs)")
         }
-        additions = (
-            ("attempt_budget", "INTEGER"),
-            ("attempt_budget_source", "TEXT"),
-            ("attempt_budget_reason", "TEXT"),
-        )
-        for column_name, column_type in additions:
+        for column_name, column_type in RUNS_ADDED_COLUMNS:
             if column_name not in existing_columns:
                 self._connection.execute(
                     f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}"
                 )
-        self._connection.execute(
-            "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
-            (str(SCHEMA_VERSION),),
-        )
 
     def start_run(
         self,
@@ -202,6 +262,10 @@ class ExperimentStore:
         test_source: str,
         judge_enabled: bool,
         task_id: Optional[str] = None,
+        judge_model: Optional[str] = None,
+        config_name: Optional[str] = None,
+        seed: Optional[int] = None,
+        language: Optional[str] = None,
         benchmark_split: str = "adhoc",
         run_id: Optional[str] = None,
         started_at: Optional[str] = None,
@@ -217,6 +281,13 @@ class ExperimentStore:
         if test_source not in VALID_TEST_SOURCES:
             allowed = ", ".join(sorted(VALID_TEST_SOURCES))
             raise ExperimentStoreError(f"test_source must be one of: {allowed}")
+        if config_name is not None and config_name not in VALID_CONFIG_NAMES:
+            allowed = ", ".join(sorted(VALID_CONFIG_NAMES))
+            raise ExperimentStoreError(f"config_name must be one of: {allowed}")
+        if seed is not None and (
+            isinstance(seed, bool) or not isinstance(seed, int) or seed < 0
+        ):
+            raise ExperimentStoreError("seed must be a non-negative integer")
         if attempt_budget is not None and (
             isinstance(attempt_budget, bool)
             or not isinstance(attempt_budget, int)
@@ -226,6 +297,8 @@ class ExperimentStore:
         for name, value in (
             ("attempt_budget_source", attempt_budget_source),
             ("attempt_budget_reason", attempt_budget_reason),
+            ("judge_model", judge_model),
+            ("language", language),
         ):
             if value is not None and (
                 not isinstance(value, str) or not value.strip()
@@ -258,9 +331,10 @@ class ExperimentStore:
                     INSERT INTO runs(
                         run_id, task_id, problem_statement, benchmark_split,
                         prompt_version, model_name, test_source, judge_enabled,
+                        judge_model, config_name, seed, language,
                         attempt_budget, attempt_budget_source,
                         attempt_budget_reason, started_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_run_id,
@@ -271,6 +345,10 @@ class ExperimentStore:
                         model_name,
                         test_source,
                         int(bool(judge_enabled)),
+                        judge_model.strip() if judge_model is not None else None,
+                        config_name,
+                        seed,
+                        language.strip() if language is not None else None,
                         attempt_budget,
                         (
                             attempt_budget_source.strip()
@@ -405,7 +483,8 @@ class ExperimentStore:
                 """
                 UPDATE runs
                 SET completed_at = ?, final_status = ?, stop_reason = ?,
-                    best_attempt_number = ?
+                    best_attempt_number = ?, model_calls = ?,
+                    wall_clock_seconds = ?
                 WHERE run_id = ?
                 """,
                 (
@@ -413,11 +492,130 @@ class ExperimentStore:
                     final_status,
                     result.stop_reason,
                     result.best_attempt_number or None,
+                    result.model_calls,
+                    result.wall_clock_seconds,
                     run_id,
                 ),
             )
         if cursor.rowcount != 1:
             raise ExperimentStoreError(f"unknown experiment run: {run_id}")
+
+    def record_prompt_experiment(
+        self,
+        baseline_prompt_id: str,
+        candidate_prompt_id: str,
+        benchmark_split: str,
+        task_count: int,
+        baseline_pass_rate: float,
+        candidate_pass_rate: float,
+        candidate_only_passes: int,
+        baseline_only_passes: int,
+        p_value: float,
+        decision: str,
+        reason: str,
+        experiment_id: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> str:
+        """Record one baseline-versus-candidate prompt comparison.
+
+        The two discordant counts are named rather than called b and c so a
+        later reader cannot silently invert the promotion decision.
+        """
+        for name, value in (
+            ("baseline_prompt_id", baseline_prompt_id),
+            ("candidate_prompt_id", candidate_prompt_id),
+            ("reason", reason),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ExperimentStoreError(f"{name} must be a non-empty string")
+        if baseline_prompt_id == candidate_prompt_id:
+            raise ExperimentStoreError(
+                "candidate_prompt_id must differ from baseline_prompt_id"
+            )
+        if benchmark_split not in VALID_BENCHMARK_SPLITS:
+            allowed = ", ".join(sorted(VALID_BENCHMARK_SPLITS))
+            raise ExperimentStoreError(f"benchmark_split must be one of: {allowed}")
+        if decision not in VALID_PROMPT_DECISIONS:
+            allowed = ", ".join(sorted(VALID_PROMPT_DECISIONS))
+            raise ExperimentStoreError(f"decision must be one of: {allowed}")
+        if (
+            isinstance(task_count, bool)
+            or not isinstance(task_count, int)
+            or task_count < 1
+        ):
+            raise ExperimentStoreError("task_count must be a positive integer")
+        for name, value in (
+            ("candidate_only_passes", candidate_only_passes),
+            ("baseline_only_passes", baseline_only_passes),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ExperimentStoreError(f"{name} must be a non-negative integer")
+        if candidate_only_passes + baseline_only_passes > task_count:
+            raise ExperimentStoreError(
+                "discordant pairs cannot exceed task_count"
+            )
+        for name, value in (
+            ("baseline_pass_rate", baseline_pass_rate),
+            ("candidate_pass_rate", candidate_pass_rate),
+            ("p_value", p_value),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ExperimentStoreError(f"{name} must be a number")
+            if not 0.0 <= float(value) <= 1.0:
+                raise ExperimentStoreError(f"{name} must be between 0 and 1")
+
+        resolved_id = str(uuid4()) if experiment_id is None else experiment_id
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO prompt_experiments(
+                        experiment_id, baseline_prompt_id, candidate_prompt_id,
+                        benchmark_split, task_count, baseline_pass_rate,
+                        candidate_pass_rate, candidate_only_passes,
+                        baseline_only_passes, p_value, decision, reason,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        baseline_prompt_id,
+                        candidate_prompt_id,
+                        benchmark_split,
+                        task_count,
+                        float(baseline_pass_rate),
+                        float(candidate_pass_rate),
+                        candidate_only_passes,
+                        baseline_only_passes,
+                        float(p_value),
+                        decision,
+                        reason.strip(),
+                        created_at or _timestamp(),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ExperimentStoreError(
+                f"could not record prompt experiment {resolved_id}: {exc}"
+            ) from exc
+        return resolved_id
+
+    def prompt_experiments(
+        self,
+        candidate_prompt_id: Optional[str] = None,
+        limit: int = 50,
+    ):
+        """Return recorded prompt comparisons, newest first."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ExperimentStoreError("limit must be at least 1")
+        query = "SELECT * FROM prompt_experiments"
+        parameters = []
+        if candidate_prompt_id is not None:
+            query += " WHERE candidate_prompt_id = ?"
+            parameters.append(candidate_prompt_id)
+        query += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
+        parameters.append(limit)
+        rows = self._connection.execute(query, parameters).fetchall()
+        return [dict(row) for row in rows]
 
     def get_run(self, run_id: str):
         row = self._connection.execute(

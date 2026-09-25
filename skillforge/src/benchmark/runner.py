@@ -26,6 +26,9 @@ def run_benchmark(
     judge_max_attempts: int = 3,
     judge_review_threshold: float = 0.5,
     history_store=None,
+    config_name: Optional[str] = None,
+    seed: Optional[int] = None,
+    language: Optional[str] = None,
     on_task_complete: Optional[Callable[[TaskBenchmarkResult], None]] = None,
 ) -> BenchmarkSummary:
     """Run a fixed prompt across selected tasks with one-shot hidden evaluation."""
@@ -73,6 +76,9 @@ def run_benchmark(
             history_store=history_store,
             task_id=task.task_id,
             benchmark_split=task.split,
+            config_name=config_name,
+            seed=seed,
+            language=language,
         )
         best_attempt = inner_result.best_attempt
         hidden_verification = verify(

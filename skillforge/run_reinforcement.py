@@ -1,6 +1,6 @@
 import argparse
 
-from src.agents.llm_client import LLMClient
+from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
 from src.agents.test_generator import load_test_suite
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
 from src.reinforcement_loop import AttemptResult, run_candidate_refinement_loop
@@ -71,7 +71,7 @@ def print_task_spec_warnings(task_spec) -> None:
         )
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run SkillForge's per-task candidate refinement loop with Ollama."
     )
@@ -106,9 +106,23 @@ def main() -> None:
         help="Evaluate a specific registered prompt instead of the active prompt.",
     )
     parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama model that generates and repairs code (default: {DEFAULT_MODEL}).",
+    )
+    parser.add_argument(
         "--llm-judge",
         action="store_true",
         help="Run the advisory semantic judge for every evaluated candidate.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help=(
+            "Ollama model for the advisory judge, which must come from a "
+            "different family than --model so it is not grading its own "
+            f"output. Implies --llm-judge (default when judging: {DEFAULT_JUDGE_MODEL})."
+        ),
     )
     parser.add_argument(
         "--history-db",
@@ -130,6 +144,11 @@ def main() -> None:
         default="adhoc",
         help="History split label for this task (default: adhoc).",
     )
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     history_store = None
@@ -139,7 +158,13 @@ def main() -> None:
         trusted_suite = load_test_suite(args.tests) if args.tests else None
         source = "trusted" if trusted_suite else "generated"
         print(f"Preparing one fixed {source} test suite and an initial solution...")
-        client = LLMClient()
+        client, judge_client = build_clients(
+            model=args.model,
+            judge_model=args.judge_model,
+            llm_judge=args.llm_judge,
+        )
+        print("Generator model:", client.model)
+        print("Judge model:", judge_client.model if judge_client else "disabled")
         result = run_candidate_refinement_loop(
             client=client,
             problem_statement=args.problem,
@@ -148,7 +173,7 @@ def main() -> None:
             on_attempt=print_attempt,
             trusted_test_suite=trusted_suite,
             prompt_id=args.prompt_id,
-            judge_client=client if args.llm_judge else None,
+            judge_client=judge_client,
             history_store=history_store,
             task_id=args.task_id,
             benchmark_split=args.benchmark_split,
@@ -179,6 +204,8 @@ def main() -> None:
     print("Budget reason:", result.attempt_budget_reason)
     if result.history_run_id:
         print("History run ID:", result.history_run_id)
+    print("Model calls:", result.model_calls)
+    print(f"Wall clock seconds: {result.wall_clock_seconds:.1f}")
     print("Best attempt:", result.best_attempt_number)
     print(f"Best reward: {result.best_reward:.2f}")
     if result.best_attempt:

@@ -7,6 +7,7 @@ from src.agents.test_generator import (
     TestCase as GeneratedCase,
     TestSuite as GeneratedSuite,
 )
+import src.history.experiment_store as experiment_store_module
 from src.history import ExperimentStore, ExperimentStoreError
 from src.reinforcement_loop import run_candidate_refinement_loop
 
@@ -179,6 +180,10 @@ def test_persists_unavailable_optional_judge_as_review_reason(tmp_path):
         ("benchmark_split", "test", "benchmark_split must be one of"),
         ("test_source", "unknown", "test_source must be one of"),
         ("task_id", "", "task_id must be a non-empty string"),
+        ("judge_model", "", "judge_model must be a non-empty string"),
+        ("config_name", "ful", "config_name must be one of"),
+        ("seed", -1, "seed must be a non-negative integer"),
+        ("language", "", "language must be a non-empty string"),
     ],
 )
 def test_rejects_invalid_run_metadata(tmp_path, keyword, value, message):
@@ -253,14 +258,329 @@ def test_migrates_v1_history_schema_without_removing_existing_runs(tmp_path):
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()["value"]
 
-    assert schema_version == "2"
+    assert schema_version == "3"
     assert old_run["task_id"] == "old-task"
     assert old_run["attempt_budget"] is None
     assert old_run["attempt_budget_source"] is None
     assert old_run["attempt_budget_reason"] is None
+    assert old_run["judge_model"] is None
 
 
 def test_training_query_requires_positive_limit(tmp_path):
     with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
         with pytest.raises(ExperimentStoreError, match="limit must be at least 1"):
             store.training_observations(limit=0)
+
+
+def test_records_the_judge_model_separately_from_the_generator(tmp_path):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        run_id = store.start_run(
+            problem_statement="Problem",
+            prompt_version="P0",
+            model_name="qwen2.5-coder:7b",
+            test_source="trusted",
+            judge_enabled=True,
+            judge_model="llama3.1:8b",
+        )
+        run = store.get_run(run_id)
+
+    assert run["model_name"] == "qwen2.5-coder:7b"
+    assert run["judge_model"] == "llama3.1:8b"
+    assert run["judge_enabled"] == 1
+
+
+def test_leaves_the_judge_model_empty_when_the_judge_is_off(tmp_path):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        run_id = store.start_run(
+            problem_statement="Problem",
+            prompt_version="P0",
+            model_name="qwen2.5-coder:7b",
+            test_source="trusted",
+            judge_enabled=False,
+        )
+        run = store.get_run(run_id)
+
+    assert run["judge_enabled"] == 0
+    assert run["judge_model"] is None
+
+
+def test_migrates_v2_history_schema_without_removing_existing_runs(tmp_path):
+    path = tmp_path / "experiments.sqlite3"
+    connection = sqlite3.connect(path)
+    with connection:
+        connection.executescript("""
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO metadata(key, value) VALUES('schema_version', '2');
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                problem_statement TEXT NOT NULL,
+                benchmark_split TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                test_source TEXT NOT NULL,
+                judge_enabled INTEGER NOT NULL,
+                attempt_budget INTEGER,
+                attempt_budget_source TEXT,
+                attempt_budget_reason TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                final_status TEXT,
+                stop_reason TEXT,
+                best_attempt_number INTEGER
+            );
+            INSERT INTO runs(
+                run_id, task_id, problem_statement, benchmark_split,
+                prompt_version, model_name, test_source, judge_enabled,
+                attempt_budget, attempt_budget_source, attempt_budget_reason,
+                started_at
+            ) VALUES (
+                'old-run', 'old-task', 'Old problem', 'adhoc',
+                'P0', 'old-model', 'trusted', 1,
+                3, 'cli_override', 'Fixed for the ablation.',
+                '2026-08-01T00:00:00Z'
+            );
+        """)
+    connection.close()
+
+    with ExperimentStore(path) as store:
+        old_run = store.get_run("old-run")
+        new_run_id = store.start_run(
+            problem_statement="Problem",
+            prompt_version="P0",
+            model_name="qwen2.5-coder:7b",
+            test_source="trusted",
+            judge_enabled=True,
+            judge_model="llama3.1:8b",
+        )
+        new_run = store.get_run(new_run_id)
+        schema_version = store._connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()["value"]
+
+    assert schema_version == "3"
+    assert old_run["task_id"] == "old-task"
+    assert old_run["attempt_budget"] == 3
+    assert new_run["judge_model"] == "llama3.1:8b"
+    for column in (
+        "judge_model",
+        "config_name",
+        "seed",
+        "language",
+        "model_calls",
+        "wall_clock_seconds",
+    ):
+        assert old_run[column] is None, column
+
+
+def test_adds_columns_appended_after_the_database_reached_this_version(
+    tmp_path, monkeypatch
+):
+    """A later task appending to RUNS_ADDED_COLUMNS must reach old databases."""
+    path = tmp_path / "experiments.sqlite3"
+    with ExperimentStore(path):
+        pass
+
+    monkeypatch.setattr(
+        experiment_store_module,
+        "RUNS_ADDED_COLUMNS",
+        experiment_store_module.RUNS_ADDED_COLUMNS + (("seed", "INTEGER"),),
+    )
+    with ExperimentStore(path) as store:
+        columns = {
+            row["name"]
+            for row in store._connection.execute("PRAGMA table_info(runs)")
+        }
+
+    assert "seed" in columns
+
+
+class SeparateJudgeClient(InvalidJudgeClient):
+    """A judge from a different family than HistoryRepairClient."""
+
+    model = "history-judge-model:1b"
+
+
+def test_run_records_the_judge_model_the_loop_actually_used(tmp_path):
+    path = tmp_path / "experiments.sqlite3"
+    with ExperimentStore(path) as store:
+        result = run_candidate_refinement_loop(
+            client=HistoryRepairClient(),
+            problem_statement="Read one integer and print twice its value.",
+            trusted_test_suite=trusted_suite(),
+            history_store=store,
+            task_id="double-judge-separate",
+            benchmark_split="train",
+            judge_client=SeparateJudgeClient(),
+        )
+        run = store.get_run(result.history_run_id)
+
+    assert run["model_name"] == "history-test-model:1b"
+    assert run["judge_model"] == "history-judge-model:1b"
+    assert run["model_name"] != run["judge_model"]
+
+
+def test_run_without_a_judge_records_no_judge_model(tmp_path):
+    path = tmp_path / "experiments.sqlite3"
+    with ExperimentStore(path) as store:
+        result = run_stored_task(store, "train", "double-no-judge")
+        run = store.get_run(result.history_run_id)
+
+    assert run["judge_enabled"] == 0
+    assert run["judge_model"] is None
+
+
+class PassingJudgeClient:
+    """A judge that returns one valid, clean grade per candidate."""
+
+    model = "history-judge-model:1b"
+
+    def generate(self, prompt, system=None, temperature=0.0):
+        return json.dumps({
+            "problem_understanding": 0.9,
+            "algorithm_suitability": 0.9,
+            "edge_case_handling": 0.9,
+            "requirement_adherence": 0.9,
+            "code_quality": 0.9,
+            "overall_score": 0.9,
+            "critical_issues": [],
+            "feedback": "No semantic issue remains.",
+            "likely_failure_category": "NONE",
+        })
+
+
+def test_run_records_what_it_cost(tmp_path):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        result = run_stored_task(store, "train", "double-cost")
+        run = store.get_run(result.history_run_id)
+
+    # Task analysis, the first generation, and one repair. The trusted suite
+    # means no test-generation call.
+    assert result.model_calls == 3
+    assert run["model_calls"] == 3
+    assert result.wall_clock_seconds > 0
+    assert run["wall_clock_seconds"] > 0
+
+
+def test_judge_calls_count_towards_what_the_run_cost(tmp_path):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        without_judge = run_stored_task(store, "train", "double-cost-nojudge")
+        with_judge = run_candidate_refinement_loop(
+            client=HistoryRepairClient(),
+            problem_statement="Read one integer and print twice its value.",
+            trusted_test_suite=trusted_suite(),
+            history_store=store,
+            task_id="double-cost-judge",
+            benchmark_split="train",
+            judge_client=PassingJudgeClient(),
+        )
+        judged_run = store.get_run(with_judge.history_run_id)
+
+    # The same three generator calls, plus one judge call per evaluated
+    # candidate. A judge is not free and the cost column has to say so.
+    assert without_judge.model_calls == 3
+    assert with_judge.model_calls == 5
+    assert judged_run["model_calls"] == 5
+
+
+def test_records_the_experiment_arm_labels(tmp_path):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        result = run_candidate_refinement_loop(
+            client=HistoryRepairClient(),
+            problem_statement="Read one integer and print twice its value.",
+            trusted_test_suite=trusted_suite(),
+            history_store=store,
+            task_id="double-arm",
+            benchmark_split="train",
+            config_name="full",
+            language="python",
+        )
+        run = store.get_run(result.history_run_id)
+
+    assert run["config_name"] == "full"
+    assert run["language"] == "python"
+    # The seed stays empty until the generator actually threads it into
+    # Ollama; a recorded seed that changed nothing would be a false record.
+    assert run["seed"] is None
+
+
+def _experiment_arguments(**overrides):
+    arguments = {
+        "baseline_prompt_id": "P0",
+        "candidate_prompt_id": "P1",
+        "benchmark_split": "validation",
+        "task_count": 40,
+        "baseline_pass_rate": 0.55,
+        "candidate_pass_rate": 0.70,
+        "candidate_only_passes": 9,
+        "baseline_only_passes": 3,
+        "p_value": 0.073,
+        "decision": "promoted",
+        "reason": "Candidate beat the baseline on discordant pairs.",
+    }
+    arguments.update(overrides)
+    return arguments
+
+
+def test_prompt_experiment_round_trips(tmp_path):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        experiment_id = store.record_prompt_experiment(**_experiment_arguments())
+        records = store.prompt_experiments()
+
+    assert len(records) == 1
+    record = records[0]
+    assert record["experiment_id"] == experiment_id
+    assert record["baseline_prompt_id"] == "P0"
+    assert record["candidate_prompt_id"] == "P1"
+    assert record["candidate_only_passes"] == 9
+    assert record["baseline_only_passes"] == 3
+    assert record["p_value"] == pytest.approx(0.073)
+    assert record["decision"] == "promoted"
+    assert record["created_at"] is not None
+
+
+def test_prompt_experiments_return_newest_first_and_filter_by_candidate(tmp_path):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        store.record_prompt_experiment(
+            **_experiment_arguments(
+                candidate_prompt_id="P1",
+                decision="rejected",
+                created_at="2026-09-01T00:00:00Z",
+            )
+        )
+        store.record_prompt_experiment(
+            **_experiment_arguments(
+                candidate_prompt_id="P2",
+                created_at="2026-09-20T00:00:00Z",
+            )
+        )
+        newest_first = store.prompt_experiments()
+        only_p1 = store.prompt_experiments(candidate_prompt_id="P1")
+
+    assert [record["candidate_prompt_id"] for record in newest_first] == ["P2", "P1"]
+    assert [record["decision"] for record in only_p1] == ["rejected"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"decision": "maybe"}, "decision must be one of"),
+        ({"benchmark_split": "test"}, "benchmark_split must be one of"),
+        ({"candidate_prompt_id": "P0"}, "candidate_prompt_id must differ"),
+        ({"task_count": 0}, "task_count must be a positive integer"),
+        ({"candidate_only_passes": -1}, "candidate_only_passes must be a non-negative"),
+        ({"p_value": 1.4}, "p_value must be between 0 and 1"),
+        ({"reason": "  "}, "reason must be a non-empty string"),
+        (
+            {"task_count": 5, "candidate_only_passes": 4, "baseline_only_passes": 3},
+            "discordant pairs cannot exceed task_count",
+        ),
+    ],
+)
+def test_rejects_invalid_prompt_experiment(tmp_path, overrides, message):
+    with ExperimentStore(tmp_path / "experiments.sqlite3") as store:
+        with pytest.raises(ExperimentStoreError, match=message):
+            store.record_prompt_experiment(**_experiment_arguments(**overrides))

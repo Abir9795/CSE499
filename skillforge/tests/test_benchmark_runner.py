@@ -252,3 +252,30 @@ def test_runner_rejects_unknown_programmatic_filters(tmp_path):
             categories=("unknown",),
             prompt_registry=registry,
         )
+
+
+def test_runner_labels_every_task_run_with_the_experiment_arm(tmp_path):
+    dataset = write_dataset(tmp_path / "benchmark.json")
+    registry = make_registry(tmp_path / "prompts.json")
+    with ExperimentStore(tmp_path / "history.sqlite3") as store:
+        summary = run_benchmark(
+            BenchmarkClient(),
+            dataset,
+            prompt_registry=registry,
+            prompt_id="P1",
+            history_store=store,
+            config_name="scalar_repair",
+            language="python",
+        )
+        run_rows = [
+            store.get_run(result.history_run_id)
+            for result in summary.task_results
+        ]
+
+    assert len(run_rows) == 2
+    for row in run_rows:
+        assert row["config_name"] == "scalar_repair"
+        assert row["language"] == "python"
+        # Each task is counted on its own, not across the sweep.
+        assert row["model_calls"] > 0
+        assert row["wall_clock_seconds"] > 0

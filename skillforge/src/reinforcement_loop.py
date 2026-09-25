@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
+import time
 from typing import Callable, List, Optional
 
 from src.agents.code_generator import CodeCandidate, generate_code
+from src.agents.llm_client import CallCountingClient
 from src.agents.refinement_agent import refine_code
 from src.agents.task_spec import TaskSpec, parse_task
 from src.agents.test_generator import TestSuite, generate_tests
@@ -40,6 +42,11 @@ class CandidateRefinementResult:
     attempt_budget: Optional[int] = None
     attempt_budget_source: str = "unknown"
     attempt_budget_reason: str = ""
+    # What this run cost: every generator and judge call it made, and how
+    # long it took end to end. Candidate execution time lives in the runtime
+    # grade and is a different measurement.
+    model_calls: int = 0
+    wall_clock_seconds: float = 0.0
 
     @property
     def best_attempt(self) -> Optional[AttemptResult]:
@@ -129,6 +136,9 @@ def run_candidate_refinement_loop(
     history_store=None,
     task_id: Optional[str] = None,
     benchmark_split: str = "adhoc",
+    config_name: Optional[str] = None,
+    seed: Optional[int] = None,
+    language: Optional[str] = None,
 ) -> CandidateRefinementResult:
     """Generate, evaluate, and repair candidates for one programming task.
 
@@ -151,6 +161,15 @@ def run_candidate_refinement_loop(
         raise ValueError("max_consecutive_repeats must be at least 1")
     if judge_max_attempts < 1:
         raise ValueError("judge_max_attempts must be at least 1")
+
+    # Wrap before the first model call so task analysis is counted too, and
+    # rebind the names so every call below is counted without each call site
+    # having to know. `seed` is recorded as a label only; it does not reach
+    # Ollama until the generator threads it into its request options.
+    run_started = time.perf_counter()
+    client = CallCountingClient(client)
+    if judge_client is not None:
+        judge_client = CallCountingClient(judge_client)
 
     task_spec = parse_task(client, problem_statement)
     (
@@ -188,8 +207,12 @@ def run_candidate_refinement_loop(
             model_name=candidate.model_name,
             test_source=test_source,
             judge_enabled=judge_client is not None,
+            judge_model=getattr(judge_client, "model", None) if judge_client else None,
             task_id=task_id,
             benchmark_split=benchmark_split,
+            config_name=config_name,
+            seed=seed,
+            language=language,
             attempt_budget=attempt_budget,
             attempt_budget_source=attempt_budget_source,
             attempt_budget_reason=attempt_budget_reason,
@@ -288,6 +311,10 @@ def run_candidate_refinement_loop(
                 else "attempt_limit"
             )
 
+    result.model_calls = client.call_count + (
+        judge_client.call_count if judge_client is not None else 0
+    )
+    result.wall_clock_seconds = time.perf_counter() - run_started
     if history_store is not None:
         history_store.complete_run(result.history_run_id, result)
     return result
