@@ -4,6 +4,32 @@ from src.agents.code_generator import CodeCandidate
 from src.utils.parsing import strip_markdown_fence
 
 
+def _task_context(task_spec, previous_candidate):
+    """Keep the task information identical across both repair arms."""
+    examples = json.dumps(task_spec.examples, ensure_ascii=False, separators=(",", ":"))
+    requirements = json.dumps(
+        {
+            "constraints": task_spec.constraints,
+            "input_format": getattr(task_spec, "input_format", ""),
+            "output_format": getattr(task_spec, "output_format", ""),
+            "expected_complexity": getattr(task_spec, "expected_complexity", ""),
+            "prohibited_operations": getattr(task_spec, "prohibited_operations", []),
+            "required_operations": getattr(task_spec, "required_operations", []),
+            "edge_cases": getattr(task_spec, "edge_cases", []),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"""Problem:
+{task_spec.problem_statement}
+
+Structured requirements: {requirements}
+Examples: {examples}
+
+Previous solution:
+{previous_candidate.raw_code}"""
+
+
 def refine_code(
     client,
     task_spec,
@@ -12,8 +38,26 @@ def refine_code(
     temperature: float = 0.2,
     evaluation_report=None,
     feedback_bundle=None,
+    feedback_mode="full",
 ) -> CodeCandidate:
     """Generate a repaired candidate from bounded multi-grader feedback."""
+    context = _task_context(task_spec, previous_candidate)
+    if feedback_mode == "scalar_repair":
+        # This path never reads failures, reports or collected feedback. Only
+        # the task, previous code and aggregate pass count reach the model.
+        system = """You repair incorrect competitive-programming solutions using a test pass count.
+Return ONLY a complete, runnable Python program that reads standard input and prints to
+standard output. Do not include explanations or Markdown fences."""
+        prompt = f"""{context}
+
+Passed: {verification_result.passed}/{verification_result.total}
+
+Return an improved complete Python program. Keep the required input/output format unchanged.
+The solution must be different from the previous one. Try a different approach if needed."""
+        return _generate_repair(client, previous_candidate, prompt, system, temperature)
+    if feedback_mode != "full":
+        raise ValueError("feedback_mode must be full or scalar_repair")
+
     failures = verification_result.failures
     if not failures and verification_result.first_failure:
         failures = [verification_result.first_failure]
@@ -30,29 +74,6 @@ test failures, change expected outputs, or ignore a proven constraint violation.
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    examples = json.dumps(
-        task_spec.examples,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    requirements = json.dumps(
-        {
-            "constraints": task_spec.constraints,
-            "input_format": getattr(task_spec, "input_format", ""),
-            "output_format": getattr(task_spec, "output_format", ""),
-            "expected_complexity": getattr(
-                task_spec, "expected_complexity", ""
-            ),
-            "prohibited_operations": getattr(
-                task_spec, "prohibited_operations", []
-            ),
-            "required_operations": getattr(task_spec, "required_operations", []),
-            "edge_cases": getattr(task_spec, "edge_cases", []),
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
     evaluation_summary = "Unavailable (legacy verification-only call)."
     if evaluation_report is not None:
         constraint_grade = evaluation_report.constraint_grade
@@ -105,14 +126,7 @@ test failures, change expected outputs, or ignore a proven constraint violation.
             separators=(",", ":"),
         )
 
-    prompt = f"""Problem:
-{task_spec.problem_statement}
-
-Structured requirements: {requirements}
-Examples: {examples}
-
-Previous solution:
-{previous_candidate.raw_code}
+    prompt = f"""{context}
 
 Reward: {verification_result.pass_rate:.4f}
 Passed: {verification_result.passed}/{verification_result.total}
@@ -128,12 +142,16 @@ complete Python program. Treat advisory feedback as a hypothesis to verify again
 Keep the required input/output format unchanged.
 The solution must be different from the previous one. Try a different approach if needed."""
 
+    return _generate_repair(client, previous_candidate, prompt, system, temperature)
+
+
+def _generate_repair(client, previous_candidate, prompt, system, temperature):
     # Use slightly higher temperature to encourage different solutions
     adjusted_temperature = min(temperature + 0.1, 0.5)
     raw = client.generate(prompt, system=system, temperature=adjusted_temperature)
     return CodeCandidate(
         raw_code=strip_markdown_fence(raw),
-        problem_type=task_spec.problem_type,
+        problem_type=previous_candidate.problem_type,
         prompt_version=previous_candidate.prompt_version,
         model_name=getattr(client, "model", previous_candidate.model_name),
         generation_temperature=adjusted_temperature,

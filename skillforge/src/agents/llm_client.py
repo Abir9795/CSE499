@@ -1,4 +1,4 @@
-import json
+from src.experiments import request_seed, validate_seed
 
 try:
     import ollama
@@ -17,20 +17,24 @@ class LLMClient:
     def __init__(self, model=DEFAULT_MODEL):
         self.model = model
 
-    def generate(self, prompt, system=None, temperature=0.2):
+    def generate(self, prompt, system=None, temperature=0.2, *, seed=None):
         return self._generate(
             prompt,
             system=system,
             temperature=temperature,
+            seed=seed,
         )
 
-    def generate_json(self, prompt, system=None, temperature=0.0, schema=None):
+    def generate_json(
+        self, prompt, system=None, temperature=0.0, schema=None, *, seed=None,
+    ):
         """Generate JSON using Ollama's native JSON/JSON-schema mode."""
         return self._generate(
             prompt,
             system=system,
             temperature=temperature,
             response_format=schema or "json",
+            seed=seed,
         )
 
     def _generate(
@@ -39,7 +43,9 @@ class LLMClient:
         system=None,
         temperature=0.2,
         response_format=None,
+        seed=None,
     ):
+        validate_seed(seed)
         if ollama is None:
             return self._fallback_response(prompt, system)
 
@@ -56,6 +62,8 @@ class LLMClient:
             )
             if response_format is not None:
                 request["format"] = response_format
+            if seed is not None:
+                request["options"]["seed"] = seed
             response = ollama.chat(**request)
             return response["message"]["content"]
         except Exception:
@@ -91,7 +99,7 @@ def build_clients(model=None, judge_model=None, llm_judge=False):
 
 
 class CallCountingClient:
-    """Count model calls made through any client, real or a test double.
+    """Count calls and optionally inject seeds at the model-client boundary.
 
     The counter sits at the client boundary rather than inside LLMClient so
     that it also counts calls made by test doubles, and so that the retries
@@ -103,13 +111,26 @@ class CallCountingClient:
     whether `generate_json` exists. Forwarding through __getattr__ keeps a
     missing method missing instead of pushing a `generate`-only client down
     the JSON path.
+
+    Seeded clients must accept the `seed` keyword. A stage gets its own
+    reproducible sequence, including retries; unseeded calls retain the
+    original method signature for compatibility with older clients.
     """
 
-    def __init__(self, inner):
+    def __init__(self, inner, *, seed=None, task_key=""):
         # Bind first, so no attribute lookup reaches __getattr__ before
         # _inner exists and recurses forever.
         self._inner = inner
+        validate_seed(seed)
+        self._seed = seed
+        self._task_key = task_key
+        self.set_stage("default")
         self.call_count = 0
+
+    def set_stage(self, stage):
+        """Start an independent seed sequence so retries cannot shift later stages."""
+        self._stage = stage
+        self._stage_calls = 0
 
     def __getattr__(self, name):
         attribute = getattr(self._inner, name)
@@ -119,6 +140,11 @@ class CallCountingClient:
 
     def _counted(self, method):
         def call(*args, **kwargs):
+            if self._seed is not None:
+                kwargs["seed"] = request_seed(
+                    self._seed, self._task_key, self._stage, self._stage_calls,
+                )
+            self._stage_calls += 1
             # Count before delegating, so a call that raises still counts as
             # compute spent.
             self.call_count += 1

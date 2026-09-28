@@ -1,6 +1,8 @@
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 import run_benchmark
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL
 
@@ -46,3 +48,27 @@ def test_model_flags_override_both_clients(monkeypatch):
 
     assert captured["client"].model == "qwen2.5-coder:3b"
     assert captured["judge_client"].model == "llama3.2:3b"
+
+
+def test_experiment_flags_reach_runner(monkeypatch):
+    captured = _run_main(monkeypatch, [
+        "--config", "best_of_n", "--seed", "0", "--language", "python",
+        "--max-attempts", "3", "--prompt-id", "P1",
+    ])
+    assert captured["config_name"] == "best_of_n"
+    assert captured["seed"] == 0
+    assert captured["language"] == "python"
+    assert captured["max_attempts"] == 3
+    assert captured["prompt_id"] == "P1"
+
+
+@pytest.mark.parametrize("flags", [
+    ["--config", "retrieval"], ["--language", "javascript"], ["--seed", "-1"],
+])
+def test_unsupported_options_fail_before_creating_history(monkeypatch, tmp_path, flags):
+    path = tmp_path / "unused.db"
+    monkeypatch.setattr(sys, "argv", ["run_benchmark.py", "--history-db", str(path), *flags])
+    with pytest.raises(SystemExit) as error:
+        run_benchmark.main()
+    assert error.value.code == 1
+    assert not path.exists()

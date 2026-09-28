@@ -1,9 +1,12 @@
+import time
 from typing import Callable, Iterable, Optional
 
+from src.agents.llm_client import CallCountingClient
 from src.benchmark.loader import VALID_CATEGORIES, VALID_SPLITS
 from src.benchmark.models import BenchmarkSummary, TaskBenchmarkResult
 from src.evaluation.pipeline import evaluate_candidate
 from src.evolution.prompt_registry import load_default_registry
+from src.experiments import validate_experiment
 from src.reinforcement_loop import run_candidate_refinement_loop
 from src.verifier.outcome_verifier import verify
 
@@ -32,6 +35,7 @@ def run_benchmark(
     on_task_complete: Optional[Callable[[TaskBenchmarkResult], None]] = None,
 ) -> BenchmarkSummary:
     """Run a fixed prompt across selected tasks with one-shot hidden evaluation."""
+    mode, language = validate_experiment(config_name, seed, language)
     selected_splits = _selection(splits)
     selected_categories = _selection(categories)
     if selected_splits is not None:
@@ -61,6 +65,7 @@ def run_benchmark(
     summary = BenchmarkSummary(prompt_version=selected_prompt.prompt_id)
 
     for task in selected_tasks:
+        task_started = time.perf_counter()
         inner_result = run_candidate_refinement_loop(
             client=client,
             problem_statement=task.problem_statement,
@@ -79,6 +84,7 @@ def run_benchmark(
             config_name=config_name,
             seed=seed,
             language=language,
+            complete_history=False,
         )
         best_attempt = inner_result.best_attempt
         hidden_verification = verify(
@@ -86,15 +92,23 @@ def run_benchmark(
             task.hidden_tests,
             max_failures=0,
         )
+        hidden_judge = None
+        if judge_client is not None:
+            hidden_judge = CallCountingClient(judge_client, seed=seed, task_key=task.task_id)
+            hidden_judge.set_stage("hidden_judge")
         hidden_report, _ = evaluate_candidate(
             inner_result.task_spec,
             best_attempt.candidate.raw_code,
             hidden_verification,
             test_source="trusted",
-            judge_client=judge_client,
+            judge_client=hidden_judge,
             judge_max_attempts=judge_max_attempts,
             judge_review_threshold=judge_review_threshold,
         )
+        inner_result.model_calls += hidden_judge.call_count if hidden_judge else 0
+        inner_result.wall_clock_seconds = time.perf_counter() - task_started
+        if history_store is not None:
+            history_store.complete_run(inner_result.history_run_id, inner_result)
         task_result = TaskBenchmarkResult(
             task_id=task.task_id,
             title=task.title,
@@ -107,7 +121,10 @@ def run_benchmark(
             attempt_budget_source=inner_result.attempt_budget_source,
             attempt_budget_reason=inner_result.attempt_budget_reason,
             attempt_count=len(inner_result.attempts),
-            repair_attempts=max(len(inner_result.attempts) - 1, 0),
+            repair_attempts=(
+                0 if mode in ("single_shot", "best_of_n")
+                else max(len(inner_result.attempts) - 1, 0)
+            ),
             first_attempt_score=(
                 inner_result.attempts[0].evaluation_report.functional_grade.score
             ),
@@ -116,6 +133,11 @@ def run_benchmark(
             final_visible_status=best_attempt.evaluation_report.status.value,
             hidden_status=hidden_report.status.value,
             stop_reason=inner_result.stop_reason,
+            config_name=mode,
+            seed=seed,
+            language=language,
+            model_calls=inner_result.model_calls,
+            wall_clock_seconds=inner_result.wall_clock_seconds,
         )
         summary.task_results.append(task_result)
         if on_task_complete is not None:

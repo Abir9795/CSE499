@@ -8,6 +8,8 @@ import sqlite3
 from typing import Iterable, Optional, Tuple
 from uuid import uuid4
 
+from src.experiments import CONFIG_NAMES
+
 
 SCHEMA_VERSION = 3
 # Columns added to `runs` after schema version 1, applied additively on
@@ -28,13 +30,7 @@ VALID_BENCHMARK_SPLITS = frozenset({"adhoc", "train", "validation", "hidden"})
 # The experiment arms of the results grid. Validated on the way in so a
 # mistyped arm fails at run start rather than filing a whole sweep under a
 # name no analysis query matches.
-VALID_CONFIG_NAMES = frozenset({
-    "single_shot",
-    "best_of_n",
-    "scalar_repair",
-    "full",
-    "retrieval",
-})
+VALID_CONFIG_NAMES = frozenset(CONFIG_NAMES)
 VALID_PROMPT_DECISIONS = frozenset({"promoted", "rejected"})
 VALID_TEST_SOURCES = frozenset({"generated", "trusted"})
 DEFAULT_HISTORY_PATH = (

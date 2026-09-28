@@ -128,3 +128,42 @@ def test_counts_a_call_that_raises():
         counted.generate("one")
 
     assert counted.call_count == 1
+
+
+@pytest.mark.parametrize("method", ["generate", "generate_json"])
+def test_seed_reaches_ollama_for_text_and_json(monkeypatch, method):
+    requests = []
+
+    def fake_chat(**request):
+        requests.append(request)
+        return {"message": {"content": "{}"}}
+
+    monkeypatch.setattr(llm_client_module, "ollama", SimpleNamespace(chat=fake_chat))
+    getattr(LLMClient("test"), method)("prompt", seed=0)
+    assert requests[0]["options"]["seed"] == 0
+
+
+def test_stage_seeds_repeat_across_clients_and_change_with_task_and_base_seed(monkeypatch):
+    requests = []
+
+    def fake_chat(**request):
+        requests.append(request)
+        return {"message": {"content": "{}"}}
+
+    monkeypatch.setattr(llm_client_module, "ollama", SimpleNamespace(chat=fake_chat))
+
+    def seeds(base, task):
+        requests.clear()
+        client = CallCountingClient(LLMClient(), seed=base, task_key=task)
+        client.set_stage("analysis")
+        client.generate_json("analyze")
+        client.generate_json("retry")
+        client.set_stage("candidate:1")
+        client.generate("code")
+        return [r["options"]["seed"] for r in requests]
+
+    baseline = seeds(42, "task-a")
+    assert seeds(42, "task-a") == baseline
+    assert seeds(43, "task-a") != baseline
+    assert seeds(42, "task-b") != baseline
+    assert len(set(baseline)) == 3

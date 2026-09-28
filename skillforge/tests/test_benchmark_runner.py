@@ -2,7 +2,9 @@ import json
 
 import pytest
 
+import src.benchmark.runner as runner_module
 from src.benchmark.loader import load_benchmark
+from src.benchmark.models import BenchmarkDataset
 from src.benchmark.runner import run_benchmark
 from src.evolution.prompt_registry import PromptRegistry
 from src.history import ExperimentStore
@@ -14,8 +16,8 @@ class BenchmarkClient:
     def __init__(self):
         self.requests = []
 
-    def generate(self, prompt, system=None, temperature=0.2):
-        self.requests.append({"prompt": prompt, "system": system or ""})
+    def generate(self, prompt, system=None, temperature=0.2, *, seed=None):
+        self.requests.append({"prompt": prompt, "system": system or "", "seed": seed})
         system = system or ""
         if "problem analyzer" in system.lower():
             return json.dumps({
@@ -279,3 +281,118 @@ def test_runner_labels_every_task_run_with_the_experiment_arm(tmp_path):
         # Each task is counted on its own, not across the sweep.
         assert row["model_calls"] > 0
         assert row["wall_clock_seconds"] > 0
+
+
+class RetryingJudge:
+    model = "judge-test-model"
+
+    def __init__(self, clock):
+        self.requests = []
+        self.clock = clock
+
+    def generate_json(self, prompt, system=None, temperature=0, schema=None, *, seed=None):
+        self.requests.append(dict(prompt=prompt, seed=seed))
+        self.clock["now"] += 5
+        if len(self.requests) % 2:
+            return "invalid"
+        return json.dumps({
+            "problem_understanding": 0.9, "algorithm_suitability": 0.9,
+            "edge_case_handling": 0.9, "requirement_adherence": 0.9,
+            "code_quality": 0.9, "overall_score": 0.9,
+            "critical_issues": [], "feedback": "Looks correct.",
+            "likely_failure_category": "NONE",
+        })
+
+
+def test_benchmark_completes_after_hidden_execution_and_counts_judge_retries(tmp_path, monkeypatch):
+    dataset = write_dataset(tmp_path / "benchmark.json")
+    registry = make_registry(tmp_path / "prompts.json")
+    clock = {"now": 0}
+    monkeypatch.setattr(runner_module.time, "perf_counter", lambda: clock["now"])
+    judge = RetryingJudge(clock)
+    client = BenchmarkClient()
+    real_verify = runner_module.verify
+
+    with ExperimentStore(tmp_path / "history.db") as store:
+        def hidden_verify(code, suite, max_failures):
+            row = store._connection.execute("SELECT * FROM runs").fetchone()
+            assert row["completed_at"] is None
+            assert row["model_calls"] is None
+            assert max_failures == 0
+            clock["now"] += 11
+            return real_verify(code, suite, max_failures=max_failures)
+
+        monkeypatch.setattr(runner_module, "verify", hidden_verify)
+        summary = run_benchmark(
+            client, dataset, splits=["validation"], prompt_registry=registry,
+            judge_client=judge, history_store=store, config_name="single_shot", seed=7,
+        )
+        result = summary.task_results[0]
+        row = store.get_run(result.history_run_id)
+
+    assert len(judge.requests) == 4  # visible + hidden, each with one retry
+    assert len({r["seed"] for r in judge.requests}) == 4
+    assert all(r["seed"] is not None for r in client.requests)
+    assert row["model_calls"] == result.model_calls == len(client.requests) + len(judge.requests) == 6
+    assert row["wall_clock_seconds"] == result.wall_clock_seconds == 31
+    assert row["completed_at"] is not None
+    assert row["judge_model"] == judge.model
+    assert summary.to_dict()["model_calls"] == 6
+    assert summary.to_dict()["wall_clock_seconds"] == 31
+
+
+def test_best_of_n_selects_before_one_hidden_evaluation(tmp_path, monkeypatch):
+    dataset = write_dataset(tmp_path / "benchmark.json")
+    registry = make_registry(tmp_path / "prompts.json")
+
+    class Samples(BenchmarkClient):
+        def __init__(self):
+            super().__init__()
+            self.codes = iter(["print(4)", "print(int(input()) * 2)", "print(0)"])
+
+        def generate(self, prompt, system=None, temperature=0.2, *, seed=None):
+            if "SYSTEM PROMPT" in system:
+                self.requests.append(dict(prompt=prompt, system=system, seed=seed))
+                return next(self.codes)
+            return super().generate(prompt, system=system, temperature=temperature, seed=seed)
+
+    hidden_codes = []
+    real_verify = runner_module.verify
+
+    def hidden_verify(code, suite, max_failures):
+        assert max_failures == 0
+        hidden_codes.append(code)
+        return real_verify(code, suite, max_failures=max_failures)
+
+    monkeypatch.setattr(runner_module, "verify", hidden_verify)
+    client = Samples()
+    summary = run_benchmark(
+        client, dataset, splits=["train"], prompt_registry=registry,
+        config_name="best_of_n", seed=7,
+    )
+    result = summary.task_results[0]
+    assert hidden_codes == ["print(4)"]
+    assert result.final_visible_score == 1.0
+    assert result.hidden_score == 0.0
+    assert result.attempt_count == 3
+    assert result.repair_attempts == 0
+    assert result.model_calls == 4
+    assert not any("999" in r["prompt"] or "1998" in r["prompt"] for r in client.requests)
+
+
+def test_seeds_are_stable_under_task_order_and_subset_selection(tmp_path):
+    dataset = write_dataset(tmp_path / "benchmark.json")
+    registry = make_registry(tmp_path / "prompts.json")
+
+    def requests(selected_dataset, splits=None):
+        client = BenchmarkClient()
+        run_benchmark(
+            client, selected_dataset, splits=splits, prompt_registry=registry,
+            config_name="best_of_n", seed=11,
+        )
+        return sorted((r["prompt"], r["system"], r["seed"]) for r in client.requests)
+
+    original = requests(dataset)
+    reversed_tasks = BenchmarkDataset(tasks=tuple(reversed(dataset.tasks)))
+    assert requests(reversed_tasks) == original
+    assert sorted(requests(dataset, ["train"]) + requests(dataset, ["validation"])) == original

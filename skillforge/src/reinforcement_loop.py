@@ -9,6 +9,7 @@ from src.agents.task_spec import TaskSpec, parse_task
 from src.agents.test_generator import TestSuite, generate_tests
 from src.evaluation.models import EvaluationReport, EvaluationStatus
 from src.evaluation.pipeline import evaluate_candidate
+from src.experiments import DEFAULT_EXPERIMENT_ATTEMPTS, validate_experiment
 from src.feedback.collector import collect_feedback
 from src.feedback.models import FeedbackBundle
 from src.verifier.outcome_verifier import VerificationResult, verify
@@ -47,6 +48,9 @@ class CandidateRefinementResult:
     # grade and is a different measurement.
     model_calls: int = 0
     wall_clock_seconds: float = 0.0
+    config_name: str = "full"
+    seed: Optional[int] = None
+    language: str = "python"
 
     @property
     def best_attempt(self) -> Optional[AttemptResult]:
@@ -106,12 +110,22 @@ def _review_has_actionable_feedback(report: EvaluationReport) -> bool:
     )
 
 
-def _resolve_attempt_budget(task_spec: TaskSpec, max_attempts: Optional[int]):
+def _resolve_attempt_budget(
+    task_spec: TaskSpec, max_attempts: Optional[int], config_name=None,
+):
+    if config_name == "single_shot":
+        return (1, "experiment_config", "single_shot evaluates exactly one candidate.")
     if max_attempts is not None:
         return (
             max_attempts,
             "manual_override",
             "An explicit max_attempts value overrode the task-analysis decision.",
+        )
+    if config_name is not None:
+        return (
+            DEFAULT_EXPERIMENT_ATTEMPTS,
+            "experiment_config",
+            "Experiment configurations use a fixed three-candidate budget.",
         )
     return (
         task_spec.selected_max_attempts,
@@ -139,14 +153,19 @@ def run_candidate_refinement_loop(
     config_name: Optional[str] = None,
     seed: Optional[int] = None,
     language: Optional[str] = None,
+    complete_history: bool = True,
 ) -> CandidateRefinementResult:
     """Generate, evaluate, and repair candidates for one programming task.
 
     This is SkillForge's inner loop. It improves only the current code
     candidate; it does not persist cross-task lessons, change the coding
     prompt, or update model weights. A supplied trusted suite bypasses LLM
-    test generation entirely.
+    test generation entirely. Explicit experiment configurations fix the
+    budget and count repeated candidates; omitted configurations retain the
+    original dynamic budget and repeat-stop behavior. Benchmark callers
+    defer history completion until hidden evaluation has finished.
     """
+    mode, language = validate_experiment(config_name, seed, language)
     if not problem_statement.strip():
         raise ValueError("problem_statement cannot be empty")
     if max_attempts is not None and (
@@ -163,21 +182,22 @@ def run_candidate_refinement_loop(
         raise ValueError("judge_max_attempts must be at least 1")
 
     # Wrap before the first model call so task analysis is counted too, and
-    # rebind the names so every call below is counted without each call site
-    # having to know. `seed` is recorded as a label only; it does not reach
-    # Ollama until the generator threads it into its request options.
+    # rebind the names so retries are counted and seeded at the same boundary.
     run_started = time.perf_counter()
-    client = CallCountingClient(client)
+    task_key = task_id if task_id is not None else problem_statement.strip()
+    client = CallCountingClient(client, seed=seed, task_key=task_key)
     if judge_client is not None:
-        judge_client = CallCountingClient(judge_client)
+        judge_client = CallCountingClient(judge_client, seed=seed, task_key=task_key)
 
+    client.set_stage("analysis")
     task_spec = parse_task(client, problem_statement)
     (
         attempt_budget,
         attempt_budget_source,
         attempt_budget_reason,
-    ) = _resolve_attempt_budget(task_spec, max_attempts)
+    ) = _resolve_attempt_budget(task_spec, max_attempts, config_name)
     if trusted_test_suite is None:
+        client.set_stage("tests")
         test_suite = generate_tests(client, task_spec)
         test_source = "generated"
     else:
@@ -186,11 +206,14 @@ def run_candidate_refinement_loop(
     if not test_suite.cases:
         raise ValueError("the test suite is empty")
 
+    generation_temperature = 0.8 if mode == "best_of_n" else 0.2
+    client.set_stage("candidate:1")
     candidate = generate_code(
         client,
         task_spec,
         prompt_registry=prompt_registry,
         prompt_id=prompt_id,
+        temperature=generation_temperature,
     )
     result = CandidateRefinementResult(
         task_spec=task_spec,
@@ -199,6 +222,9 @@ def run_candidate_refinement_loop(
         attempt_budget=attempt_budget,
         attempt_budget_source=attempt_budget_source,
         attempt_budget_reason=attempt_budget_reason,
+        config_name=mode,
+        seed=seed,
+        language=language,
     )
     if history_store is not None:
         result.history_run_id = history_store.start_run(
@@ -210,7 +236,7 @@ def run_candidate_refinement_loop(
             judge_model=getattr(judge_client, "model", None) if judge_client else None,
             task_id=task_id,
             benchmark_split=benchmark_split,
-            config_name=config_name,
+            config_name=mode,
             seed=seed,
             language=language,
             attempt_budget=attempt_budget,
@@ -222,6 +248,8 @@ def run_candidate_refinement_loop(
     repeated_count = 0
 
     for attempt_number in range(1, attempt_budget + 1):
+        if judge_client is not None:
+            judge_client.set_stage(f"visible_judge:{attempt_number}")
         verification = verify(
             candidate.raw_code,
             test_suite,
@@ -259,6 +287,21 @@ def run_candidate_refinement_loop(
         if history_store is not None:
             history_store.record_attempt(result.history_run_id, attempt)
 
+        if mode == "best_of_n":
+            # Every independent draw consumes one sample, including duplicates
+            # and draws after a PASS. Hidden tests never participate in selection.
+            result.success = (
+                result.success or evaluation_report.status == EvaluationStatus.PASS
+            )
+            result.stop_reason = "sample_budget"
+            if attempt_number < attempt_budget:
+                client.set_stage(f"candidate:{attempt_number + 1}")
+                candidate = generate_code(
+                    client, task_spec, temperature=generation_temperature,
+                    prompt_registry=prompt_registry, prompt_id=candidate.prompt_version,
+                )
+            continue
+
         if evaluation_report.status == EvaluationStatus.PASS:
             result.success = True
             result.stop_reason = "passed"
@@ -271,6 +314,7 @@ def run_candidate_refinement_loop(
             break
 
         if attempt_number < attempt_budget:
+            client.set_stage(f"candidate:{attempt_number + 1}")
             while True:
                 refined_candidate = refine_code(
                     client,
@@ -279,7 +323,13 @@ def run_candidate_refinement_loop(
                     verification,
                     evaluation_report=evaluation_report,
                     feedback_bundle=feedback,
+                    feedback_mode=("scalar_repair" if mode == "scalar_repair" else "full"),
                 )
+                if config_name is not None:
+                    # Ablations count every generated candidate, even repeated
+                    # code. Extra retries here would exceed the sampling budget.
+                    candidate = refined_candidate
+                    break
                 fingerprint = _candidate_fingerprint(refined_candidate.raw_code)
                 if fingerprint not in seen_candidates:
                     repeated_count = 0
@@ -315,7 +365,7 @@ def run_candidate_refinement_loop(
         judge_client.call_count if judge_client is not None else 0
     )
     result.wall_clock_seconds = time.perf_counter() - run_started
-    if history_store is not None:
+    if history_store is not None and complete_history:
         history_store.complete_run(result.history_run_id, result)
     return result
 
@@ -342,6 +392,9 @@ def run_reinforcement_loop(
     history_store=None,
     task_id: Optional[str] = None,
     benchmark_split: str = "adhoc",
+    config_name: Optional[str] = None,
+    seed: Optional[int] = None,
+    language: Optional[str] = None,
 ) -> CandidateRefinementResult:
     """Compatibility wrapper for :func:`run_candidate_refinement_loop`."""
     return run_candidate_refinement_loop(
@@ -360,4 +413,7 @@ def run_reinforcement_loop(
         history_store=history_store,
         task_id=task_id,
         benchmark_split=benchmark_split,
+        config_name=config_name,
+        seed=seed,
+        language=language,
     )

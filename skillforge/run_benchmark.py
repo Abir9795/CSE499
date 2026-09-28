@@ -3,6 +3,7 @@ import json
 
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
 from src.benchmark import DEFAULT_BENCHMARK_PATH, load_benchmark, run_benchmark
+from src.experiments import add_experiment_arguments, validate_experiment
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
 
 
@@ -43,7 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Override each task-analysis LLM attempt decision. "
-            "When omitted, each task gets its own LLM-selected budget."
+            "Explicit --config defaults to three (single_shot: one); otherwise "
+            "each task gets its own LLM-selected budget."
         ),
     )
     parser.add_argument(
@@ -63,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--history-db", default=str(DEFAULT_HISTORY_PATH))
     parser.add_argument("--no-history", action="store_true")
+    add_experiment_arguments(parser)
     return parser
 
 
@@ -72,6 +75,7 @@ def main() -> None:
 
     history_store = None
     try:
+        mode, language = validate_experiment(args.config, args.seed, args.language)
         dataset = load_benchmark(args.benchmark)
         if not args.no_history:
             history_store = ExperimentStore(args.history_db)
@@ -82,6 +86,9 @@ def main() -> None:
         )
         print("Generator model:", client.model)
         print("Judge model:", judge_client.model if judge_client else "disabled")
+        print("Configuration:", mode)
+        print("Language:", language)
+        print("Seed:", args.seed if args.seed is not None else "unseeded")
         summary = run_benchmark(
             client,
             dataset,
@@ -92,6 +99,9 @@ def main() -> None:
             judge_client=judge_client,
             history_store=history_store,
             on_task_complete=print_task,
+            config_name=args.config,
+            seed=args.seed,
+            language=language,
         )
     except ValueError as exc:
         parser.exit(1, f"\nERROR: {exc}\n")

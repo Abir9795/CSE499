@@ -2,6 +2,7 @@ import argparse
 
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
 from src.agents.test_generator import load_test_suite
+from src.experiments import add_experiment_arguments, validate_experiment
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
 from src.reinforcement_loop import AttemptResult, run_candidate_refinement_loop
 
@@ -87,7 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Override the task-analysis LLM's attempt decision. "
-            "When omitted, the LLM-selected budget is used."
+            "Explicit --config defaults to three (single_shot: one); otherwise "
+            "the LLM-selected budget is used."
         ),
     )
     parser.add_argument(
@@ -144,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="adhoc",
         help="History split label for this task (default: adhoc).",
     )
+    add_experiment_arguments(parser)
     return parser
 
 
@@ -153,6 +156,7 @@ def main() -> None:
 
     history_store = None
     try:
+        mode, language = validate_experiment(args.config, args.seed, args.language)
         if not args.no_history:
             history_store = ExperimentStore(args.history_db)
         trusted_suite = load_test_suite(args.tests) if args.tests else None
@@ -165,6 +169,9 @@ def main() -> None:
         )
         print("Generator model:", client.model)
         print("Judge model:", judge_client.model if judge_client else "disabled")
+        print("Configuration:", mode)
+        print("Language:", language)
+        print("Seed:", args.seed if args.seed is not None else "unseeded")
         result = run_candidate_refinement_loop(
             client=client,
             problem_statement=args.problem,
@@ -177,6 +184,9 @@ def main() -> None:
             history_store=history_store,
             task_id=args.task_id,
             benchmark_split=args.benchmark_split,
+            config_name=args.config,
+            seed=args.seed,
+            language=language,
         )
     except ValueError as exc:
         parser.exit(1, f"\nERROR: {exc}\n")

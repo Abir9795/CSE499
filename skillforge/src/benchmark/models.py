@@ -42,6 +42,11 @@ class TaskBenchmarkResult:
     final_visible_status: str
     hidden_status: str
     stop_reason: str
+    config_name: str = "full"
+    seed: Optional[int] = None
+    language: str = "python"
+    model_calls: int = 0
+    wall_clock_seconds: float = 0.0
 
 
 @dataclass
@@ -112,5 +117,7 @@ class BenchmarkSummary:
             "mean_hidden_score": self.mean_hidden_score,
             "average_attempt_count": self.average_attempt_count,
             "average_attempt_budget": self.average_attempt_budget,
+            "model_calls": sum(result.model_calls for result in self.task_results),
+            "wall_clock_seconds": sum(result.wall_clock_seconds for result in self.task_results),
             "task_results": [asdict(result) for result in self.task_results],
         }
