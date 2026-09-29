@@ -2,6 +2,7 @@ import argparse
 import json
 
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
+from src.agents.task_spec_cache import DEFAULT_TASK_SPEC_CACHE, TaskSpecCache, add_cache_arguments
 from src.benchmark import DEFAULT_BENCHMARK_PATH, load_benchmark, run_benchmark
 from src.experiments import add_experiment_arguments, validate_experiment
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
@@ -65,6 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--history-db", default=str(DEFAULT_HISTORY_PATH))
     parser.add_argument("--no-history", action="store_true")
+    parser.add_argument("--run-id", help="Persistent ID for this benchmark sweep (default: generated UUID).")
+    parser.add_argument("--resume", action="store_true", help="Resume --run-id with the same experiment settings.")
+    add_cache_arguments(parser, default=DEFAULT_TASK_SPEC_CACHE)
     add_experiment_arguments(parser)
     return parser
 
@@ -76,6 +80,10 @@ def main() -> None:
     history_store = None
     try:
         mode, language = validate_experiment(args.config, args.seed, args.language)
+        if args.resume and not args.run_id:
+            raise ValueError("--resume requires --run-id")
+        if args.no_history and (args.resume or args.run_id is not None):
+            raise ValueError("--run-id/--resume require history storage")
         dataset = load_benchmark(args.benchmark)
         if not args.no_history:
             history_store = ExperimentStore(args.history_db)
@@ -102,6 +110,12 @@ def main() -> None:
             config_name=args.config,
             seed=args.seed,
             language=language,
+            run_id=args.run_id,
+            resume=args.resume,
+            task_spec_cache=(
+                None if args.no_task_spec_cache else TaskSpecCache(args.task_spec_cache_dir)
+            ),
+            on_sweep_start=lambda run_id: print("Benchmark run ID:", run_id, flush=True),
         )
     except ValueError as exc:
         parser.exit(1, f"\nERROR: {exc}\n")

@@ -47,12 +47,19 @@ class TaskBenchmarkResult:
     language: str = "python"
     model_calls: int = 0
     wall_clock_seconds: float = 0.0
+    task_spec_cache_hit: bool = False
+    analysis_model_calls: int = 0
+    analysis_wall_clock_seconds: float = 0.0
 
 
 @dataclass
 class BenchmarkSummary:
     prompt_version: str
     task_results: List[TaskBenchmarkResult] = field(default_factory=list)
+    run_id: Optional[str] = None
+    resumed_tasks: int = 0
+    interrupted_model_calls: int = 0
+    interrupted_wall_clock_seconds: float = 0.0
 
     @property
     def task_count(self) -> int:
@@ -107,6 +114,10 @@ class BenchmarkSummary:
 
     def to_dict(self) -> dict:
         return {
+            "run_id": self.run_id,
+            "resumed_tasks": self.resumed_tasks,
+            "interrupted_model_calls": self.interrupted_model_calls,
+            "interrupted_wall_clock_seconds": self.interrupted_wall_clock_seconds,
             "prompt_version": self.prompt_version,
             "task_count": self.task_count,
             "first_attempt_pass_rate": self.first_attempt_pass_rate,
@@ -119,5 +130,7 @@ class BenchmarkSummary:
             "average_attempt_budget": self.average_attempt_budget,
             "model_calls": sum(result.model_calls for result in self.task_results),
             "wall_clock_seconds": sum(result.wall_clock_seconds for result in self.task_results),
+            "analysis_model_calls": sum(result.analysis_model_calls for result in self.task_results),
+            "analysis_wall_clock_seconds": sum(result.analysis_wall_clock_seconds for result in self.task_results),
             "task_results": [asdict(result) for result in self.task_results],
         }

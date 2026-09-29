@@ -144,3 +144,10 @@ def test_unsupported_options_fail_before_creating_history(monkeypatch, tmp_path,
         run_reinforcement.main()
     assert error.value.code == 1
     assert not path.exists()
+
+
+def test_adhoc_cache_is_opt_in(monkeypatch, tmp_path):
+    assert _run_main(monkeypatch, [])["task_spec_cache"] is None
+    flags = ["--task-spec-cache-dir", str(tmp_path / "cache")]
+    assert _run_main(monkeypatch, flags)["task_spec_cache"].directory == tmp_path / "cache"
+    assert _run_main(monkeypatch, flags + ["--no-task-spec-cache"])["task_spec_cache"] is None

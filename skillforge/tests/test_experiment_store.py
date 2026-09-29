@@ -258,7 +258,7 @@ def test_migrates_v1_history_schema_without_removing_existing_runs(tmp_path):
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()["value"]
 
-    assert schema_version == "3"
+    assert schema_version == "4"
     assert old_run["task_id"] == "old-task"
     assert old_run["attempt_budget"] is None
     assert old_run["attempt_budget_source"] is None
@@ -361,7 +361,7 @@ def test_migrates_v2_history_schema_without_removing_existing_runs(tmp_path):
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()["value"]
 
-    assert schema_version == "3"
+    assert schema_version == "4"
     assert old_run["task_id"] == "old-task"
     assert old_run["attempt_budget"] == 3
     assert new_run["judge_model"] == "llama3.1:8b"
@@ -502,9 +502,44 @@ def test_records_the_experiment_arm_labels(tmp_path):
 
     assert run["config_name"] == "full"
     assert run["language"] == "python"
-    # The seed stays empty until the generator actually threads it into
-    # Ollama; a recorded seed that changed nothing would be a false record.
+    # No seed was requested for this run.
     assert run["seed"] is None
+
+
+def test_migrates_v3_preserving_model_costs_and_adds_resume_tables(tmp_path):
+    path = tmp_path / "v3.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+            CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO metadata VALUES('schema_version', '3');
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+                problem_statement TEXT NOT NULL, benchmark_split TEXT NOT NULL,
+                prompt_version TEXT NOT NULL, model_name TEXT NOT NULL,
+                test_source TEXT NOT NULL, judge_enabled INTEGER NOT NULL,
+                judge_model TEXT, config_name TEXT, seed INTEGER, language TEXT,
+                model_calls INTEGER, wall_clock_seconds REAL,
+                attempt_budget INTEGER, attempt_budget_source TEXT, attempt_budget_reason TEXT,
+                started_at TEXT NOT NULL, completed_at TEXT, final_status TEXT,
+                stop_reason TEXT, best_attempt_number INTEGER
+            );
+            INSERT INTO runs(run_id, task_id, problem_statement, benchmark_split,
+                prompt_version, model_name, test_source, judge_enabled,
+                config_name, seed, language, model_calls, wall_clock_seconds, started_at)
+            VALUES('legacy', 'task', 'Problem', 'train', 'P0', 'model', 'trusted',
+                0, 'full', 42, 'python', 5, 12.5, '2026-09-01');
+        """)
+    with ExperimentStore(path) as store:
+        row = store.get_run("legacy")
+        assert row["model_calls"] == 5
+        assert row["wall_clock_seconds"] == 12.5
+        assert row["seed"] == 42
+        assert row["benchmark_run_id"] is None
+        assert row["analysis_model_calls"] is None
+        assert row["task_spec_cache_hit"] is None
+        assert store._connection.execute("SELECT value FROM metadata").fetchone()[0] == "4"
+        assert store._connection.execute("SELECT COUNT(*) FROM benchmark_runs").fetchone()[0] == 0
+        assert store._connection.execute("SELECT COUNT(*) FROM benchmark_tasks").fetchone()[0] == 0
 
 
 def _experiment_arguments(**overrides):

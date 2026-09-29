@@ -72,3 +72,36 @@ def test_unsupported_options_fail_before_creating_history(monkeypatch, tmp_path,
         run_benchmark.main()
     assert error.value.code == 1
     assert not path.exists()
+
+
+def test_cache_is_enabled_by_default_and_can_be_disabled(monkeypatch):
+    assert _run_main(monkeypatch, [])["task_spec_cache"] is not None
+    assert _run_main(monkeypatch, ["--no-task-spec-cache"])["task_spec_cache"] is None
+
+
+def test_resume_and_cache_flags_are_forwarded(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(client, dataset, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(to_dict=dict)
+
+    monkeypatch.setattr(run_benchmark, "load_benchmark", lambda path: object())
+    monkeypatch.setattr(run_benchmark, "run_benchmark", fake_run)
+    monkeypatch.setattr(sys, "argv", [
+        "run_benchmark.py", "--history-db", str(tmp_path / "history.db"),
+        "--run-id", "night-1", "--resume", "--task-spec-cache-dir", str(tmp_path / "cache"),
+    ])
+    run_benchmark.main()
+    assert captured["run_id"] == "night-1"
+    assert captured["resume"] is True
+    assert captured["task_spec_cache"].directory == tmp_path / "cache"
+
+
+@pytest.mark.parametrize("flags", [["--resume"], ["--no-history", "--run-id", "run-1"]])
+def test_invalid_resume_options_fail_before_creating_history(monkeypatch, tmp_path, flags):
+    path = tmp_path / "unused.db"
+    monkeypatch.setattr(sys, "argv", ["run_benchmark.py", "--history-db", str(path), *flags])
+    with pytest.raises(SystemExit):
+        run_benchmark.main()
+    assert not path.exists()

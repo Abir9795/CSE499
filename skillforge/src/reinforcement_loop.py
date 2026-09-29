@@ -51,6 +51,9 @@ class CandidateRefinementResult:
     config_name: str = "full"
     seed: Optional[int] = None
     language: str = "python"
+    task_spec_cache_hit: bool = False
+    analysis_model_calls: int = 0
+    analysis_wall_clock_seconds: float = 0.0
 
     @property
     def best_attempt(self) -> Optional[AttemptResult]:
@@ -154,6 +157,8 @@ def run_candidate_refinement_loop(
     seed: Optional[int] = None,
     language: Optional[str] = None,
     complete_history: bool = True,
+    task_spec_cache=None,
+    benchmark_run_id: Optional[str] = None,
 ) -> CandidateRefinementResult:
     """Generate, evaluate, and repair candidates for one programming task.
 
@@ -184,13 +189,23 @@ def run_candidate_refinement_loop(
     # Wrap before the first model call so task analysis is counted too, and
     # rebind the names so retries are counted and seeded at the same boundary.
     run_started = time.perf_counter()
+    analysis_started = run_started
+    cache_hit = False
+    cached_analysis_calls = 0
+    if task_spec_cache is not None:
+        task_spec, cache_hit, cached_analysis_calls = task_spec_cache.get_or_analyze(
+            client, problem_statement, language,
+        )
     task_key = task_id if task_id is not None else problem_statement.strip()
     client = CallCountingClient(client, seed=seed, task_key=task_key)
     if judge_client is not None:
         judge_client = CallCountingClient(judge_client, seed=seed, task_key=task_key)
 
-    client.set_stage("analysis")
-    task_spec = parse_task(client, problem_statement)
+    if task_spec_cache is None:
+        client.set_stage("analysis")
+        task_spec = parse_task(client, problem_statement)
+    analysis_calls = cached_analysis_calls + client.call_count
+    analysis_seconds = time.perf_counter() - analysis_started
     (
         attempt_budget,
         attempt_budget_source,
@@ -225,6 +240,9 @@ def run_candidate_refinement_loop(
         config_name=mode,
         seed=seed,
         language=language,
+        task_spec_cache_hit=cache_hit,
+        analysis_model_calls=analysis_calls,
+        analysis_wall_clock_seconds=analysis_seconds,
     )
     if history_store is not None:
         result.history_run_id = history_store.start_run(
@@ -242,6 +260,7 @@ def run_candidate_refinement_loop(
             attempt_budget=attempt_budget,
             attempt_budget_source=attempt_budget_source,
             attempt_budget_reason=attempt_budget_reason,
+            benchmark_run_id=benchmark_run_id,
         )
     best_rank = None
     seen_candidates = {_candidate_fingerprint(candidate.raw_code): 1}
@@ -361,7 +380,7 @@ def run_candidate_refinement_loop(
                 else "attempt_limit"
             )
 
-    result.model_calls = client.call_count + (
+    result.model_calls = cached_analysis_calls + client.call_count + (
         judge_client.call_count if judge_client is not None else 0
     )
     result.wall_clock_seconds = time.perf_counter() - run_started
@@ -395,6 +414,7 @@ def run_reinforcement_loop(
     config_name: Optional[str] = None,
     seed: Optional[int] = None,
     language: Optional[str] = None,
+    task_spec_cache=None,
 ) -> CandidateRefinementResult:
     """Compatibility wrapper for :func:`run_candidate_refinement_loop`."""
     return run_candidate_refinement_loop(
@@ -416,4 +436,5 @@ def run_reinforcement_loop(
         config_name=config_name,
         seed=seed,
         language=language,
+        task_spec_cache=task_spec_cache,
     )

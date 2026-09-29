@@ -2,6 +2,7 @@ import argparse
 
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
 from src.agents.test_generator import load_test_suite
+from src.agents.task_spec_cache import TaskSpecCache, add_cache_arguments
 from src.experiments import add_experiment_arguments, validate_experiment
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
 from src.reinforcement_loop import AttemptResult, run_candidate_refinement_loop
@@ -147,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="History split label for this task (default: adhoc).",
     )
     add_experiment_arguments(parser)
+    add_cache_arguments(parser)
     return parser
 
 
@@ -187,6 +189,10 @@ def main() -> None:
             config_name=args.config,
             seed=args.seed,
             language=language,
+            task_spec_cache=(
+                TaskSpecCache(args.task_spec_cache_dir)
+                if args.task_spec_cache_dir and not args.no_task_spec_cache else None
+            ),
         )
     except ValueError as exc:
         parser.exit(1, f"\nERROR: {exc}\n")

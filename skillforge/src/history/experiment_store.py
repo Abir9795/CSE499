@@ -11,7 +11,7 @@ from uuid import uuid4
 from src.experiments import CONFIG_NAMES
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # Columns added to `runs` after schema version 1, applied additively on
 # every open. Later schema versions append here rather than writing a new
 # migration; see _ensure_runs_columns.
@@ -25,6 +25,10 @@ RUNS_ADDED_COLUMNS = (
     ("language", "TEXT"),
     ("model_calls", "INTEGER"),
     ("wall_clock_seconds", "REAL"),
+    ("benchmark_run_id", "TEXT"),
+    ("task_spec_cache_hit", "INTEGER"),
+    ("analysis_model_calls", "INTEGER"),
+    ("analysis_wall_clock_seconds", "REAL"),
 )
 VALID_BENCHMARK_SPLITS = frozenset({"adhoc", "train", "validation", "hidden"})
 # The experiment arms of the results grid. Validated on the way in so a
@@ -203,6 +207,24 @@ class ExperimentStore:
                     ON failure_signals(category, strength);
                 CREATE INDEX IF NOT EXISTS idx_prompt_experiments_candidate
                     ON prompt_experiments(candidate_prompt_id);
+
+                CREATE TABLE IF NOT EXISTS benchmark_runs (
+                    run_id TEXT PRIMARY KEY,
+                    manifest_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS benchmark_tasks (
+                    benchmark_run_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    checkpoint_json TEXT,
+                    result_json TEXT,
+                    interrupted_model_calls INTEGER NOT NULL DEFAULT 0,
+                    interrupted_wall_clock_seconds REAL NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    PRIMARY KEY (benchmark_run_id, task_id),
+                    FOREIGN KEY (benchmark_run_id) REFERENCES benchmark_runs(run_id)
+                );
             """)
             row = self._connection.execute(
                 "SELECT value FROM metadata WHERE key = 'schema_version'"
@@ -268,6 +290,7 @@ class ExperimentStore:
         attempt_budget: Optional[int] = None,
         attempt_budget_source: Optional[str] = None,
         attempt_budget_reason: Optional[str] = None,
+        benchmark_run_id: Optional[str] = None,
     ) -> str:
         if not isinstance(problem_statement, str) or not problem_statement.strip():
             raise ExperimentStoreError("problem_statement must be non-empty")
@@ -329,8 +352,8 @@ class ExperimentStore:
                         prompt_version, model_name, test_source, judge_enabled,
                         judge_model, config_name, seed, language,
                         attempt_budget, attempt_budget_source,
-                        attempt_budget_reason, started_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        attempt_budget_reason, started_at, benchmark_run_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_run_id,
@@ -357,6 +380,7 @@ class ExperimentStore:
                             else None
                         ),
                         started_at or _timestamp(),
+                        benchmark_run_id,
                     ),
                 )
         except sqlite3.IntegrityError as exc:
@@ -480,7 +504,8 @@ class ExperimentStore:
                 UPDATE runs
                 SET completed_at = ?, final_status = ?, stop_reason = ?,
                     best_attempt_number = ?, model_calls = ?,
-                    wall_clock_seconds = ?
+                    wall_clock_seconds = ?, task_spec_cache_hit = ?,
+                    analysis_model_calls = ?, analysis_wall_clock_seconds = ?
                 WHERE run_id = ?
                 """,
                 (
@@ -490,11 +515,113 @@ class ExperimentStore:
                     result.best_attempt_number or None,
                     result.model_calls,
                     result.wall_clock_seconds,
+                    int(result.task_spec_cache_hit),
+                    result.analysis_model_calls,
+                    result.analysis_wall_clock_seconds,
                     run_id,
                 ),
             )
         if cursor.rowcount != 1:
             raise ExperimentStoreError(f"unknown experiment run: {run_id}")
+
+    def begin_benchmark(self, manifest, run_id=None, resume=False):
+        """Pin settings once; an existing sweep can only be opened explicitly."""
+        if resume and not run_id:
+            raise ExperimentStoreError("--resume requires --run-id")
+        if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+            raise ExperimentStoreError("benchmark run ID must be non-empty")
+        run_id = run_id or str(uuid4())
+        row = self._connection.execute(
+            "SELECT manifest_json FROM benchmark_runs WHERE run_id = ?", (run_id,),
+        ).fetchone()
+        if row is not None:
+            if not resume:
+                raise ExperimentStoreError("benchmark run ID already exists; use --resume")
+            if json.loads(row["manifest_json"]) != manifest:
+                raise ExperimentStoreError("cannot resume: benchmark settings or contents have changed")
+        else:
+            if resume:
+                raise ExperimentStoreError(f"unknown benchmark run ID: {run_id}")
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO benchmark_runs(run_id, manifest_json, started_at) VALUES (?, ?, ?)",
+                    (run_id, _json_dump(manifest), _timestamp()),
+                )
+                self._connection.executemany(
+                    "INSERT INTO benchmark_tasks(benchmark_run_id, task_id) VALUES (?, ?)",
+                    [(run_id, task_id) for task_id in manifest["task_ids"]],
+                )
+        return run_id
+
+    def benchmark_task(self, run_id, task_id):
+        row = self._connection.execute(
+            "SELECT * FROM benchmark_tasks WHERE benchmark_run_id = ? AND task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if row is None:
+            raise ExperimentStoreError(f"unknown benchmark task: {run_id}/{task_id}")
+        return dict(row)
+
+    def checkpoint_benchmark_task(self, run_id, task_id, checkpoint):
+        """Freeze visible selection before any hidden execution."""
+        with self._connection:
+            cursor = self._connection.execute(
+                """UPDATE benchmark_tasks SET checkpoint_json = ?
+                   WHERE benchmark_run_id = ? AND task_id = ? AND result_json IS NULL""",
+                (_json_dump(checkpoint), run_id, task_id),
+            )
+            if cursor.rowcount != 1:
+                raise ExperimentStoreError("cannot checkpoint a missing or completed benchmark task")
+
+    def complete_benchmark_task(self, run_id, result, best_attempt_number):
+        """Commit hidden results and the task-run completion atomically."""
+        with self._connection:
+            cursor = self._connection.execute(
+                """UPDATE runs SET completed_at = ?, final_status = ?, stop_reason = ?,
+                   best_attempt_number = ?, model_calls = ?, wall_clock_seconds = ?,
+                   task_spec_cache_hit = ?, analysis_model_calls = ?, analysis_wall_clock_seconds = ?
+                   WHERE run_id = ? AND benchmark_run_id = ?""",
+                (_timestamp(), result.final_visible_status, result.stop_reason,
+                 best_attempt_number, result.model_calls, result.wall_clock_seconds,
+                 int(result.task_spec_cache_hit), result.analysis_model_calls,
+                 result.analysis_wall_clock_seconds, result.history_run_id, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ExperimentStoreError("unknown benchmark task history run")
+            cursor = self._connection.execute(
+                """UPDATE benchmark_tasks SET result_json = ?, last_error = NULL
+                   WHERE benchmark_run_id = ? AND task_id = ? AND result_json IS NULL""",
+                (_json_dump(result), run_id, result.task_id),
+            )
+            if cursor.rowcount != 1:
+                raise ExperimentStoreError("benchmark task is missing or already complete")
+
+    def interrupt_benchmark_task(self, run_id, task_id, model_calls, seconds, error):
+        with self._connection:
+            self._connection.execute(
+                """UPDATE benchmark_tasks
+                   SET interrupted_model_calls = interrupted_model_calls + ?,
+                       interrupted_wall_clock_seconds = interrupted_wall_clock_seconds + ?,
+                       last_error = ?
+                   WHERE benchmark_run_id = ? AND task_id = ? AND result_json IS NULL""",
+                (model_calls, seconds, type(error).__name__, run_id, task_id),
+            )
+
+    def finish_benchmark(self, run_id):
+        rows = self._connection.execute(
+            "SELECT * FROM benchmark_tasks WHERE benchmark_run_id = ?", (run_id,),
+        ).fetchall()
+        if not rows or any(row["result_json"] is None for row in rows):
+            raise ExperimentStoreError("cannot complete a benchmark with unfinished tasks")
+        with self._connection:
+            self._connection.execute(
+                "UPDATE benchmark_runs SET completed_at = COALESCE(completed_at, ?) WHERE run_id = ?",
+                (_timestamp(), run_id),
+            )
+        return (
+            sum(row["interrupted_model_calls"] for row in rows),
+            sum(row["interrupted_wall_clock_seconds"] for row in rows),
+        )
 
     def record_prompt_experiment(
         self,
