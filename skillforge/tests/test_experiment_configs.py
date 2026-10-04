@@ -175,6 +175,14 @@ def test_bad_experiment_options_fail_before_model_calls(arguments, message):
     assert client.requests == []
 
 
+def test_programmatic_loop_rejects_same_family_before_analysis():
+    client = RecordingClient()
+    client.model = "qwen2.5-coder:7b"
+    with pytest.raises(ValueError, match="different model families"):
+        run_task(client, judge_client=LLMClient("qwen2.5:3b"))
+    assert client.requests == []
+
+
 def test_every_pipeline_request_is_seeded_including_generated_test_retries(monkeypatch):
     requests = []
     test_calls = 0

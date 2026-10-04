@@ -4,7 +4,7 @@ import json
 import time
 from typing import Callable, Iterable, Optional
 
-from src.agents.llm_client import CallCountingClient
+from src.agents.llm_client import CallCountingClient, validate_judge_pair
 from src.agents.task_spec_cache import (
     ANALYSIS_SEED, CACHE_VERSION, analyzer_fingerprint, task_spec_from_dict,
 )
@@ -52,6 +52,7 @@ def run_benchmark(
     caught interruptions record their costs separately from completed results.
     """
     _, language = validate_experiment(config_name, seed, language)
+    validate_judge_pair(client, judge_client)
     if (run_id is not None or resume) and history_store is None:
         raise ValueError("--run-id/--resume require history storage")
     if resume and not run_id:

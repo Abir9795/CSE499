@@ -73,6 +73,18 @@ def test_naming_a_judge_model_enables_the_judge():
     assert judge.model == "llama3.2:3b"
 
 
+@pytest.mark.parametrize("generator, judge", [
+    ("qwen2.5-coder:7b", "qwen2.5-coder:7b"),
+    ("qwen2.5-coder:7b", "qwen2.5:3b"),
+    ("qwen2.5-coder:7b", "namespace/Qwen3:8b"),
+    ("llama3.1:8b", "llama3.2:3b"),
+    ("custom-model", "custom-model:latest"),
+])
+def test_rejects_same_model_or_known_same_family_judge(generator, judge):
+    with pytest.raises(ValueError, match="different model families"):
+        build_clients(model=generator, judge_model=judge)
+
+
 class _GenerateOnlyClient:
     model = "generate-only:1b"
 

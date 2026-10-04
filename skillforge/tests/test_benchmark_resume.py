@@ -116,7 +116,7 @@ def test_resume_rejects_changed_settings_before_model_calls(tmp_path, setup, cha
         elif change == "model":
             client.model = "different-model"
         elif change == "judge":
-            setup["judge_client"] = BenchmarkClient()
+            setup["judge_client"] = PassingJudgeClient()
         elif change == "prompt":
             setup["prompt_registry"]._versions = tuple(
                 replace(p, prompt_text=p.prompt_text + " changed") for p in setup["prompt_registry"].versions
@@ -148,6 +148,10 @@ def test_generation_interruption_restarts_only_unfinished_task_and_retains_histo
             run_benchmark(InterruptedClient(), history_store=store, **setup)
         result = run_benchmark(BenchmarkClient(), history_store=store, resume=True, **setup)
         rows = store._connection.execute("SELECT * FROM runs ORDER BY started_at").fetchall()
+        # A discarded partial run must not duplicate training evidence after resume.
+        assert store.failure_counts() == {"LOGIC_ERROR": 1}
+        observations = store.training_observations()
+        assert len(observations) == 1
     assert len(rows) == 2
     assert rows[0]["completed_at"] is None
     assert rows[1]["completed_at"] is not None
@@ -155,6 +159,10 @@ def test_generation_interruption_restarts_only_unfinished_task_and_retains_histo
     assert result.interrupted_model_calls == 3
     assert result.task_results[0].model_calls == 3
     assert result.task_results[0].hidden_score == 1
+    costs = result.to_dict()
+    assert costs["completed_model_calls"] == 3
+    assert costs["model_calls"] == 6  # Failed work still consumed model calls.
+    assert costs["model_calls_per_solved_task"] == 6
 
 
 def test_completion_failure_rolls_back_both_result_and_run_status(tmp_path, setup):
@@ -188,6 +196,15 @@ def test_duplicate_and_missing_sweep_ids_are_not_silently_restarted(tmp_path, se
 def test_resume_requires_persistence_and_id(setup):
     with pytest.raises(ValueError, match="require history storage"):
         run_benchmark(BenchmarkClient(), **setup)
+
+
+def test_benchmark_rejects_self_judge_before_creating_sweep(tmp_path, setup):
+    client = BenchmarkClient()
+    with ExperimentStore(tmp_path / "history.db") as store:
+        with pytest.raises(ValueError, match="different model families"):
+            run_benchmark(client, judge_client=client, history_store=store, **setup)
+        assert store._connection.execute("SELECT COUNT(*) FROM benchmark_runs").fetchone()[0] == 0
+    assert client.requests == []
 
 
 def test_completed_review_is_skipped_without_rejudging(tmp_path, setup):
@@ -241,3 +258,17 @@ def test_interrupted_hidden_judge_costs_are_separate_and_no_generation_is_repeat
     assert result.wall_clock_seconds == 10
     assert resumed.interrupted_model_calls == 1
     assert resumed.interrupted_wall_clock_seconds == 5
+    costs = resumed.to_dict()
+    assert costs["model_calls"] == 5
+    assert costs["wall_clock_seconds"] == 15
+    assert costs["completed_model_calls"] == 4
+    assert costs["completed_wall_clock_seconds"] == 10
+    assert costs["model_calls_per_solved_task"] == 5
+
+
+def test_cost_per_solved_task_is_unavailable_when_no_task_is_solved(tmp_path, setup):
+    setup["splits"] = ["train"]
+    with ExperimentStore(tmp_path / "history.db") as store:
+        report = run_benchmark(BenchmarkClient(), history_store=store, **setup).to_dict()
+    assert report["model_calls"] == 2
+    assert report["model_calls_per_solved_task"] is None

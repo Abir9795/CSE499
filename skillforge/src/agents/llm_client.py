@@ -1,3 +1,5 @@
+import re
+
 from src.experiments import request_seed, validate_seed
 
 try:
@@ -84,6 +86,30 @@ class LLMClient:
         )
 
 
+def validate_judge_pair(generator, judge):
+    """Reject self-judging in the solve pipeline before spending compute.
+
+    Recognizes the plan's Qwen/Llama families across versions, sizes and
+    namespaces, and matching base names for other models. Arbitrary local
+    aliases do not disclose their family; their provenance must be checked
+    when choosing models. Stored-code self-judging can still use judge_code.
+    """
+    if judge is None:
+        return
+
+    def family(client):
+        model = getattr(client, "model", None)
+        if not isinstance(model, str) or not model.strip():
+            return None
+        name = model.strip().lower().rsplit("/", 1)[-1].split(":", 1)[0]
+        known = re.match(r"(qwen|llama)(?=$|[\d._-])", name)
+        return known.group(1) if known else name
+
+    generator_family, judge_family = family(generator), family(judge)
+    if generator is judge or (generator_family is not None and generator_family == judge_family):
+        raise ValueError("generator and judge must use different model families")
+
+
 def build_clients(model=None, judge_model=None, llm_judge=False):
     """Return (generator_client, judge_client) for one run.
 
@@ -95,7 +121,9 @@ def build_clients(model=None, judge_model=None, llm_judge=False):
     generator = LLMClient(model or DEFAULT_MODEL)
     if not (llm_judge or judge_model):
         return generator, None
-    return generator, LLMClient(judge_model or DEFAULT_JUDGE_MODEL)
+    judge = LLMClient(judge_model or DEFAULT_JUDGE_MODEL)
+    validate_judge_pair(generator, judge)
+    return generator, judge
 
 
 class CallCountingClient:

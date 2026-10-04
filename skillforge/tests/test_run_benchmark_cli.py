@@ -64,6 +64,7 @@ def test_experiment_flags_reach_runner(monkeypatch):
 
 @pytest.mark.parametrize("flags", [
     ["--config", "retrieval"], ["--language", "javascript"], ["--seed", "-1"],
+    ["--model", "qwen2.5-coder:7b", "--judge-model", "qwen2.5:3b"],
 ])
 def test_unsupported_options_fail_before_creating_history(monkeypatch, tmp_path, flags):
     path = tmp_path / "unused.db"

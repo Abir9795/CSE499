@@ -3,7 +3,7 @@ import time
 from typing import Callable, List, Optional
 
 from src.agents.code_generator import CodeCandidate, generate_code
-from src.agents.llm_client import CallCountingClient
+from src.agents.llm_client import CallCountingClient, validate_judge_pair
 from src.agents.refinement_agent import refine_code
 from src.agents.task_spec import TaskSpec, parse_task
 from src.agents.test_generator import TestSuite, generate_tests
@@ -171,6 +171,7 @@ def run_candidate_refinement_loop(
     defer history completion until hidden evaluation has finished.
     """
     mode, language = validate_experiment(config_name, seed, language)
+    validate_judge_pair(client, judge_client)
     if not problem_statement.strip():
         raise ValueError("problem_statement cannot be empty")
     if max_attempts is not None and (

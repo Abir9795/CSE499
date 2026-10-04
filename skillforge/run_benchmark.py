@@ -84,14 +84,14 @@ def main() -> None:
             raise ValueError("--resume requires --run-id")
         if args.no_history and (args.resume or args.run_id is not None):
             raise ValueError("--run-id/--resume require history storage")
-        dataset = load_benchmark(args.benchmark)
-        if not args.no_history:
-            history_store = ExperimentStore(args.history_db)
         client, judge_client = build_clients(
             model=args.model,
             judge_model=args.judge_model,
             llm_judge=args.llm_judge,
         )
+        dataset = load_benchmark(args.benchmark)
+        if not args.no_history:
+            history_store = ExperimentStore(args.history_db)
         print("Generator model:", client.model)
         print("Judge model:", judge_client.model if judge_client else "disabled")
         print("Configuration:", mode)

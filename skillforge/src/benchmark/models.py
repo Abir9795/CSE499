@@ -113,6 +113,10 @@ class BenchmarkSummary:
         return self._mean(result.attempt_budget for result in self.task_results)
 
     def to_dict(self) -> dict:
+        completed_calls = sum(result.model_calls for result in self.task_results)
+        completed_seconds = sum(result.wall_clock_seconds for result in self.task_results)
+        total_calls = completed_calls + self.interrupted_model_calls
+        solved = sum(result.hidden_score == 1.0 for result in self.task_results)
         return {
             "run_id": self.run_id,
             "resumed_tasks": self.resumed_tasks,
@@ -128,8 +132,11 @@ class BenchmarkSummary:
             "mean_hidden_score": self.mean_hidden_score,
             "average_attempt_count": self.average_attempt_count,
             "average_attempt_budget": self.average_attempt_budget,
-            "model_calls": sum(result.model_calls for result in self.task_results),
-            "wall_clock_seconds": sum(result.wall_clock_seconds for result in self.task_results),
+            "completed_model_calls": completed_calls,
+            "completed_wall_clock_seconds": completed_seconds,
+            "model_calls": total_calls,
+            "wall_clock_seconds": completed_seconds + self.interrupted_wall_clock_seconds,
+            "model_calls_per_solved_task": total_calls / solved if solved else None,
             "analysis_model_calls": sum(result.analysis_model_calls for result in self.task_results),
             "analysis_wall_clock_seconds": sum(result.analysis_wall_clock_seconds for result in self.task_results),
             "task_results": [asdict(result) for result in self.task_results],

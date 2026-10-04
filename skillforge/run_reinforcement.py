@@ -159,16 +159,16 @@ def main() -> None:
     history_store = None
     try:
         mode, language = validate_experiment(args.config, args.seed, args.language)
-        if not args.no_history:
-            history_store = ExperimentStore(args.history_db)
-        trusted_suite = load_test_suite(args.tests) if args.tests else None
-        source = "trusted" if trusted_suite else "generated"
-        print(f"Preparing one fixed {source} test suite and an initial solution...")
         client, judge_client = build_clients(
             model=args.model,
             judge_model=args.judge_model,
             llm_judge=args.llm_judge,
         )
+        if not args.no_history:
+            history_store = ExperimentStore(args.history_db)
+        trusted_suite = load_test_suite(args.tests) if args.tests else None
+        source = "trusted" if trusted_suite else "generated"
+        print(f"Preparing one fixed {source} test suite and an initial solution...")
         print("Generator model:", client.model)
         print("Judge model:", judge_client.model if judge_client else "disabled")
         print("Configuration:", mode)

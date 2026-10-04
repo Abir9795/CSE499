@@ -11,7 +11,7 @@ from uuid import uuid4
 from src.experiments import CONFIG_NAMES
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # Columns added to `runs` after schema version 1, applied additively on
 # every open. Later schema versions append here rather than writing a new
 # migration; see _ensure_runs_columns.
@@ -225,6 +225,26 @@ class ExperimentStore:
                     PRIMARY KEY (benchmark_run_id, task_id),
                     FOREIGN KEY (benchmark_run_id) REFERENCES benchmark_runs(run_id)
                 );
+
+                -- Fixed judge diagnostics are never prompt-training evidence.
+                CREATE TABLE IF NOT EXISTS judge_sanity_runs (
+                    run_id TEXT PRIMARY KEY,
+                    judge_model TEXT NOT NULL,
+                    seed INTEGER,
+                    fixture_hash TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    wall_clock_seconds REAL
+                );
+                CREATE TABLE IF NOT EXISTS judge_sanity_results (
+                    run_id TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    label TEXT NOT NULL CHECK(label IN ('correct', 'broken')),
+                    result_json TEXT NOT NULL,
+                    PRIMARY KEY (run_id, case_id, label),
+                    FOREIGN KEY (run_id) REFERENCES judge_sanity_runs(run_id)
+                );
             """)
             row = self._connection.execute(
                 "SELECT value FROM metadata WHERE key = 'schema_version'"
@@ -271,6 +291,71 @@ class ExperimentStore:
                 self._connection.execute(
                     f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}"
                 )
+
+    def start_judge_sanity(self, judge_model, seed, fixture_hash, config):
+        run_id = str(uuid4())
+        with self._connection:
+            self._connection.execute(
+                """INSERT INTO judge_sanity_runs(
+                    run_id, judge_model, seed, fixture_hash, config_json, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (run_id, judge_model, seed, fixture_hash, _json_dump(config), _timestamp()),
+            )
+        return run_id
+
+    def record_judge_sanity_result(self, run_id, result):
+        """Commit each candidate independently so interruptions keep prior results."""
+        run = self._get_judge_sanity_run(run_id)
+        case_ids = {case["case_id"] for case in run["config"]["fixtures"]}
+        if run["completed_at"] is not None:
+            raise ExperimentStoreError("judge sanity run is already complete")
+        if result["case_id"] not in case_ids or result["label"] not in {"correct", "broken"}:
+            raise ExperimentStoreError("judge sanity result does not match its fixtures")
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """INSERT INTO judge_sanity_results(run_id, case_id, label, result_json)
+                    VALUES (?, ?, ?, ?)""",
+                    (run_id, result["case_id"], result["label"], _json_dump(result)),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ExperimentStoreError(f"could not record judge sanity result: {exc}") from exc
+
+    def complete_judge_sanity(self, run_id, wall_clock_seconds):
+        run, results = self.get_judge_sanity(run_id)
+        expected = {
+            (case["case_id"], label)
+            for case in run["config"]["fixtures"] for label in ("correct", "broken")
+        }
+        if len(expected) != 20 or {(row["case_id"], row["label"]) for row in results} != expected:
+            raise ExperimentStoreError("cannot complete judge sanity run without all 20 candidates")
+        with self._connection:
+            self._connection.execute(
+                """UPDATE judge_sanity_runs SET completed_at = ?, wall_clock_seconds = ?
+                WHERE run_id = ? AND completed_at IS NULL""",
+                (_timestamp(), wall_clock_seconds, run_id),
+            )
+
+    def _get_judge_sanity_run(self, run_id):
+        row = self._connection.execute(
+            "SELECT * FROM judge_sanity_runs WHERE run_id = ?", (run_id,),
+        ).fetchone()
+        if row is None:
+            raise ExperimentStoreError(f"unknown judge sanity run: {run_id}")
+        run = dict(row)
+        run["config"] = json.loads(run.pop("config_json"))
+        return run
+
+    def get_judge_sanity(self, run_id):
+        run = self._get_judge_sanity_run(run_id)
+        results = [
+            json.loads(row["result_json"])
+            for row in self._connection.execute(
+                "SELECT result_json FROM judge_sanity_results WHERE run_id = ? ORDER BY rowid",
+                (run_id,),
+            )
+        ]
+        return run, results
 
     def start_run(
         self,
@@ -793,6 +878,7 @@ class ExperimentStore:
             JOIN attempts AS a
               ON a.run_id = s.run_id AND a.attempt_number = s.attempt_number
             WHERE r.benchmark_split IN ({placeholders})
+              AND (r.benchmark_run_id IS NULL OR r.completed_at IS NOT NULL)
         """
         parameters = list(splits)
         if prompt_version is not None:
@@ -819,6 +905,7 @@ class ExperimentStore:
             JOIN attempts AS a
               ON a.run_id = s.run_id AND a.attempt_number = s.attempt_number
             WHERE r.benchmark_split = 'train'
+              AND (r.benchmark_run_id IS NULL OR r.completed_at IS NOT NULL)
         """
         parameters = []
         if prompt_version is not None:
