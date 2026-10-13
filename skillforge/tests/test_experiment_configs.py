@@ -160,7 +160,6 @@ def test_initial_generation_uses_paired_seed_across_arms():
 @pytest.mark.parametrize("arguments, message", [
     ({"config_name": "typo"}, "config_name must be one of"),
     ({"config_name": "retrieval"}, "retrieval is not implemented"),
-    ({"language": "javascript"}, "javascript execution is not implemented"),
     ({"language": "cpp"}, "cpp execution is not implemented"),
     ({"language": "java"}, "java execution is not implemented"),
     ({"language": "rust"}, "language must be one of"),

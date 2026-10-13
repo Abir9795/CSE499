@@ -2,6 +2,8 @@ from dataclasses import asdict, dataclass, field
 from typing import List, Optional, Tuple
 
 from src.agents.test_generator import TestSuite
+from src.benchmark.execution_mode import ExecutionMode, validate_execution
+from src.benchmark.language import Language
 
 
 @dataclass(frozen=True)
@@ -14,6 +16,15 @@ class BenchmarkTask:
     split: str
     visible_tests: TestSuite
     hidden_tests: TestSuite
+    language: Language = Language.PYTHON
+    execution_mode: ExecutionMode = ExecutionMode.STDIO
+    entry_point: Optional[str] = None
+
+    def __post_init__(self):
+        language, mode, entry = validate_execution(self.language, self.execution_mode, self.entry_point)
+        object.__setattr__(self, "language", language)
+        object.__setattr__(self, "execution_mode", mode)
+        object.__setattr__(self, "entry_point", entry)
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,8 @@ class TaskBenchmarkResult:
     task_spec_cache_hit: bool = False
     analysis_model_calls: int = 0
     analysis_wall_clock_seconds: float = 0.0
+    execution_mode: str = "stdio"
+    entry_point: Optional[str] = None
 
 
 @dataclass

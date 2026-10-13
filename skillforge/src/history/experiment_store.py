@@ -9,9 +9,10 @@ from typing import Iterable, Optional, Tuple
 from uuid import uuid4
 
 from src.experiments import CONFIG_NAMES
+from src.benchmark.execution_mode import validate_execution
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # Columns added to `runs` after schema version 1, applied additively on
 # every open. Later schema versions append here rather than writing a new
 # migration; see _ensure_runs_columns.
@@ -29,6 +30,8 @@ RUNS_ADDED_COLUMNS = (
     ("task_spec_cache_hit", "INTEGER"),
     ("analysis_model_calls", "INTEGER"),
     ("analysis_wall_clock_seconds", "REAL"),
+    ("execution_mode", "TEXT NOT NULL DEFAULT 'stdio'"),
+    ("entry_point", "TEXT"),
 )
 VALID_BENCHMARK_SPLITS = frozenset({"adhoc", "train", "validation", "hidden"})
 # The experiment arms of the results grid. Validated on the way in so a
@@ -376,6 +379,8 @@ class ExperimentStore:
         attempt_budget_source: Optional[str] = None,
         attempt_budget_reason: Optional[str] = None,
         benchmark_run_id: Optional[str] = None,
+        execution_mode: str = "stdio",
+        entry_point: Optional[str] = None,
     ) -> str:
         if not isinstance(problem_statement, str) or not problem_statement.strip():
             raise ExperimentStoreError("problem_statement must be non-empty")
@@ -415,6 +420,12 @@ class ExperimentStore:
                 "attempt budget source and reason are required with a budget"
             )
 
+        try:
+            _, execution_mode, entry_point = validate_execution(
+                language if language is not None else "python", execution_mode, entry_point,
+            )
+        except ValueError as exc:
+            raise ExperimentStoreError(str(exc)) from exc
         resolved_run_id = str(uuid4()) if run_id is None else run_id
         resolved_task_id = (
             _default_task_id(problem_statement) if task_id is None else task_id
@@ -437,8 +448,9 @@ class ExperimentStore:
                         prompt_version, model_name, test_source, judge_enabled,
                         judge_model, config_name, seed, language,
                         attempt_budget, attempt_budget_source,
-                        attempt_budget_reason, started_at, benchmark_run_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        attempt_budget_reason, started_at, benchmark_run_id,
+                        execution_mode, entry_point
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_run_id,
@@ -466,6 +478,8 @@ class ExperimentStore:
                         ),
                         started_at or _timestamp(),
                         benchmark_run_id,
+                        execution_mode.value,
+                        entry_point,
                     ),
                 )
         except sqlite3.IntegrityError as exc:

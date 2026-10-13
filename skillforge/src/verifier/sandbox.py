@@ -1,87 +1,22 @@
-import subprocess
-import tempfile
-import os
-import sys
-from time import perf_counter
-from dataclasses import dataclass
-from enum import Enum
+"""Compatibility facade for local execution; container isolation comes later."""
+
 from typing import Any, List
 
-
-class Status(Enum):
-    PASS = "pass"
-    FAIL = "fail"
-    TIMEOUT = "timeout"
-    ERROR = "error"
-
-
-@dataclass
-class ExecutionResult:
-    status: Status
-    stdout: str
-    stderr: str
-    exit_code: int
-    duration_seconds: float = 0.0
-
-
-def _normalize_input(stdin_input: Any) -> str:
-    if stdin_input is None:
-        return ""
-    if isinstance(stdin_input, str):
-        return stdin_input
-    if isinstance(stdin_input, (list, tuple)):
-        return "\n".join(str(item) for item in stdin_input)
-    return str(stdin_input)
+from src.benchmark.execution_mode import validate_execution
+from src.verifier.runners import get_runner
+from src.verifier.runners.base import ExecutionResult, Status, _normalize_input
 
 
 def run_code_many(
-    code: str,
-    stdin_inputs: List[Any],
-    timeout: float = 5,
+    code: str, stdin_inputs: List[Any], timeout: float = 5, *,
+    language="python", execution_mode="stdio", entry_point=None,
 ) -> List[ExecutionResult]:
-    """Write a candidate once, then execute it independently for every input."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(code)
-        path = f.name
-
-    try:
-        results = []
-        for stdin_input in stdin_inputs:
-            started_at = perf_counter()
-            try:
-                proc = subprocess.run(
-                    [sys.executable, path],
-                    input=_normalize_input(stdin_input),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-                duration = perf_counter() - started_at
-                status = Status.PASS if proc.returncode == 0 else Status.ERROR
-                results.append(
-                    ExecutionResult(
-                        status,
-                        proc.stdout,
-                        proc.stderr,
-                        proc.returncode,
-                        duration,
-                    )
-                )
-            except subprocess.TimeoutExpired:
-                duration = perf_counter() - started_at
-                results.append(
-                    ExecutionResult(
-                        Status.TIMEOUT,
-                        "",
-                        "Execution timed out",
-                        -1,
-                        duration,
-                    )
-                )
-        return results
-    finally:
-        os.unlink(path)
+    """Run stdin inputs or native assertion sources against one candidate file."""
+    language, execution_mode, entry_point = validate_execution(language, execution_mode, entry_point)
+    return get_runner(language).run_many(
+        code, stdin_inputs, timeout=timeout, execution_mode=execution_mode, entry_point=entry_point,
+    )
 
 
-def run_code(code: str, stdin_input: str = "", timeout: float = 5) -> ExecutionResult:
-    return run_code_many(code, [stdin_input], timeout=timeout)[0]
+def run_code(code: str, stdin_input: Any = "", timeout: float = 5, **options) -> ExecutionResult:
+    return run_code_many(code, [stdin_input], timeout=timeout, **options)[0]

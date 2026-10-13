@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from src.agents.task_spec import parse_task
+from src.agents.task_spec import TASK_SPEC_RESPONSE_SCHEMA, parse_task
 
 
 class TaskAnalysisClient:
@@ -177,6 +177,36 @@ def test_retries_malformed_edge_cases_and_accepts_corrected_task_spec():
     assert "previous TaskSpec response was rejected" in retry_prompt
     assert "field 'edge_cases' item 1 must be a non-empty string" in retry_prompt
     assert "Return the entire corrected JSON object" in retry_prompt
+
+
+def test_structured_analysis_retries_invalid_description_and_keeps_empty_example():
+    class StructuredClient(SequentialTaskAnalysisClient):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.schemas = []
+
+        def generate_json(self, prompt, system=None, temperature=0.2, schema=None):
+            self.schemas.append(schema)
+            return super().generate(prompt, system=system, temperature=temperature)
+
+    client = StructuredClient([
+        {"problem_type": "string", "edge_cases": [""]},
+        {
+            "problem_type": "string",
+            "edge_cases": ["empty input line", "incorrect closing order"],
+            "examples": [{"input": "", "output": "YES"}],
+        },
+    ])
+
+    spec = parse_task(client, "Check bracket nesting. An empty line is valid.")
+
+    assert spec.edge_cases == ["empty input line", "incorrect closing order"]
+    assert spec.examples == [{"input": "", "output": "YES"}]
+    assert len(client.requests) == 2
+    assert client.schemas == [TASK_SPEC_RESPONSE_SCHEMA] * 2
+    assert client.schemas[0]["properties"]["edge_cases"]["items"]["minLength"] == 1
+    assert client.requests[0]["temperature"] == 0.0
+    assert "non-empty string" in client.requests[1]["prompt"]
 
 
 def test_retries_invented_required_operation_and_accepts_grounded_correction():

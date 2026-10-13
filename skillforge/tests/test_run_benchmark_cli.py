@@ -5,6 +5,7 @@ import pytest
 
 import run_benchmark
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL
+from src.benchmark.loader import DEFAULT_PROBLEM_CATALOG_PATH, load_benchmark
 
 
 def _run_main(monkeypatch, argv):
@@ -16,11 +17,20 @@ def _run_main(monkeypatch, argv):
         captured.update(kwargs)
         return SimpleNamespace(to_dict=dict)
 
-    monkeypatch.setattr(run_benchmark, "load_benchmark", lambda path: object())
+    def fake_load(path):
+        captured["catalog_path"] = path
+        return load_benchmark(DEFAULT_PROBLEM_CATALOG_PATH)
+
+    monkeypatch.setattr(run_benchmark, "load_benchmark", fake_load)
     monkeypatch.setattr(run_benchmark, "run_benchmark", fake_run_benchmark)
     monkeypatch.setattr(sys, "argv", ["run_benchmark.py", "--no-history", *argv])
     run_benchmark.main()
     return captured
+
+
+def test_uses_shared_catalog_by_default_and_accepts_custom_catalog(monkeypatch):
+    assert _run_main(monkeypatch, [])["catalog_path"] == str(DEFAULT_PROBLEM_CATALOG_PATH)
+    assert _run_main(monkeypatch, ["custom.json"])["catalog_path"] == "custom.json"
 
 
 def test_judge_runs_a_different_model_than_the_generator(monkeypatch):
@@ -63,7 +73,7 @@ def test_experiment_flags_reach_runner(monkeypatch):
 
 
 @pytest.mark.parametrize("flags", [
-    ["--config", "retrieval"], ["--language", "javascript"], ["--seed", "-1"],
+    ["--config", "retrieval"], ["--language", "java"], ["--seed", "-1"],
     ["--model", "qwen2.5-coder:7b", "--judge-model", "qwen2.5:3b"],
 ])
 def test_unsupported_options_fail_before_creating_history(monkeypatch, tmp_path, flags):
@@ -87,7 +97,7 @@ def test_resume_and_cache_flags_are_forwarded(monkeypatch, tmp_path):
         captured.update(kwargs)
         return SimpleNamespace(to_dict=dict)
 
-    monkeypatch.setattr(run_benchmark, "load_benchmark", lambda path: object())
+    monkeypatch.setattr(run_benchmark, "load_benchmark", lambda path: load_benchmark(DEFAULT_PROBLEM_CATALOG_PATH))
     monkeypatch.setattr(run_benchmark, "run_benchmark", fake_run)
     monkeypatch.setattr(sys, "argv", [
         "run_benchmark.py", "--history-db", str(tmp_path / "history.db"),

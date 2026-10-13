@@ -5,7 +5,9 @@ from src.verifier.sandbox import Status
 def grade_runtime_robustness(verification_result) -> RuntimeGrade:
     """Grade crashes and timeouts using already-collected execution evidence."""
     executions = verification_result.execution_results
-    successful = sum(result.status == Status.PASS for result in executions)
+    # A failed assertion is a functional failure after successful execution.
+    completed = (Status.PASS, Status.FAIL)
+    successful = sum(result.status in completed for result in executions)
     timeouts = sum(result.status == Status.TIMEOUT for result in executions)
     runtime_errors = sum(result.status == Status.ERROR for result in executions)
     nonzero_exits = sum(
@@ -16,7 +18,7 @@ def grade_runtime_robustness(verification_result) -> RuntimeGrade:
     failures = []
     for index, case_result in enumerate(verification_result.case_results, start=1):
         execution = case_result.execution
-        if execution.status == Status.PASS:
+        if execution.status in completed:
             continue
         failures.append({
             "test_number": index,

@@ -10,6 +10,7 @@ import tempfile
 from src.agents import task_spec as task_spec_module
 from src.agents.llm_client import CallCountingClient
 from src.agents.task_spec import TaskSpec, _parse_task_response, parse_task
+from src.benchmark.execution_mode import validate_execution
 
 
 DEFAULT_TASK_SPEC_CACHE = Path(__file__).resolve().parents[2] / "data" / "task_spec_cache"
@@ -47,8 +48,9 @@ class TaskSpecCache:
     def __init__(self, directory=DEFAULT_TASK_SPEC_CACHE):
         self.directory = Path(directory)
 
-    def identity(self, problem_statement, model, language):
-        return {
+    def identity(self, problem_statement, model, language, execution_mode="stdio", entry_point=None):
+        language, mode, entry_point = validate_execution(language, execution_mode, entry_point)
+        identity = {
             "version": CACHE_VERSION,
             "analyzer": analyzer_fingerprint(),
             "analysis_seed": ANALYSIS_SEED,
@@ -56,10 +58,17 @@ class TaskSpecCache:
             "model": model,
             "language": language,
         }
+        # Preserve existing stdio keys/seeds. Function tasks must never reuse
+        # analysis for a different execution contract or entry point.
+        if mode != "stdio":
+            identity.update(execution_mode=mode, entry_point=entry_point)
+        return identity
 
-    def get_or_analyze(self, client, problem_statement, language="python"):
+    def get_or_analyze(self, client, problem_statement, language="python", *,
+                       execution_mode="stdio", entry_point=None):
         """Return (spec, cache_hit, actual_analysis_calls). Uses a fixed analysis seed."""
-        identity = self.identity(problem_statement, getattr(client, "model", "unknown"), language)
+        identity = self.identity(problem_statement, getattr(client, "model", "unknown"), language,
+                                 execution_mode, entry_point)
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         path = self.directory / f"{key}.json"
         try:

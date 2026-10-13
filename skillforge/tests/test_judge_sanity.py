@@ -128,7 +128,10 @@ def test_evidence_aware_judge_separates_pairs_without_receiving_labels(tmp_path,
     for index, request in enumerate(judge.requests):
         data = payload(request["prompt"])
         case = cases[index // 2]
-        assert set(data) == {"task_spec", "candidate_code", "deterministic_grades"}
+        assert set(data) == {"task_spec", "candidate_code", "deterministic_grades", "execution_contract"}
+        assert data["execution_contract"] == {
+            "language": "python", "execution_mode": "stdio", "entry_point": None,
+        }
         assert case.defect_explanation not in request["prompt"]
         assert "expected_failure_codes" not in request["prompt"]
         assert data["candidate_code"] == getattr(case, sanity.LABELS[index % 2])

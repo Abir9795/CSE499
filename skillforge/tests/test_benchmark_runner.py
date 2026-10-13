@@ -314,13 +314,13 @@ def test_benchmark_completes_after_hidden_execution_and_counts_judge_retries(tmp
     real_verify = runner_module.verify
 
     with ExperimentStore(tmp_path / "history.db") as store:
-        def hidden_verify(code, suite, max_failures):
+        def hidden_verify(code, suite, max_failures, **options):
             row = store._connection.execute("SELECT * FROM runs").fetchone()
             assert row["completed_at"] is None
             assert row["model_calls"] is None
             assert max_failures == 0
             clock["now"] += 11
-            return real_verify(code, suite, max_failures=max_failures)
+            return real_verify(code, suite, max_failures=max_failures, **options)
 
         monkeypatch.setattr(runner_module, "verify", hidden_verify)
         summary = run_benchmark(
@@ -359,10 +359,10 @@ def test_best_of_n_selects_before_one_hidden_evaluation(tmp_path, monkeypatch):
     hidden_codes = []
     real_verify = runner_module.verify
 
-    def hidden_verify(code, suite, max_failures):
+    def hidden_verify(code, suite, max_failures, **options):
         assert max_failures == 0
         hidden_codes.append(code)
-        return real_verify(code, suite, max_failures=max_failures)
+        return real_verify(code, suite, max_failures=max_failures, **options)
 
     monkeypatch.setattr(runner_module, "verify", hidden_verify)
     client = Samples()

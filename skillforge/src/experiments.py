@@ -3,9 +3,12 @@
 import hashlib
 import json
 
+from src.benchmark.execution_mode import ExecutionMode, validate_execution
+from src.benchmark.language import Language
+
 
 CONFIG_NAMES = ("single_shot", "best_of_n", "scalar_repair", "full", "retrieval")
-LANGUAGES = ("python", "javascript", "cpp", "java")
+LANGUAGES = tuple(language.value for language in Language)
 DEFAULT_EXPERIMENT_ATTEMPTS = 3
 SEED_POLICY = "sha256-v1"
 
@@ -30,13 +33,17 @@ def validate_experiment(config_name=None, seed=None, language=None):
         raise ValueError(f"language must be one of: {', '.join(LANGUAGES)}")
     if config_name == "retrieval":
         raise ValueError("retrieval is not implemented yet (project plan task 3.2)")
-    if language != "python":
+    if language not in ("python", "javascript"):
         raise ValueError(
-            f"{language} execution is not implemented yet; only Python is supported. "
-            "Language runners and prompts require project plan tasks 1.6–1.8 "
-            "(C++/Java runners: 3.4)."
+            f"{language} execution is not implemented yet "
+            "(C++/Java runners: project plan task 3.4)."
         )
     return config_name or "full", language
+
+
+def validate_generation_execution(language="python", execution_mode="stdio", entry_point=None):
+    """Validate the language/mode interface for generation and repair."""
+    return validate_execution(language, execution_mode, entry_point)
 
 
 def request_seed(base_seed, task_key, stage, call_index):
@@ -61,6 +68,12 @@ def add_experiment_arguments(parser):
         help="Base seed for reproducible model requests (omitted: unseeded).",
     )
     parser.add_argument(
-        "--language", choices=LANGUAGES, default="python",
-        help="Execution language (default: python; other runners are not implemented yet).",
+        "--language", choices=LANGUAGES, default=None,
+        help="Task language, or benchmark language filter (default: catalog value; ad hoc: python).",
     )
+
+
+def add_execution_arguments(parser):
+    parser.add_argument("--execution-mode", choices=[mode.value for mode in ExecutionMode],
+                        help="Ad hoc execution contract (default: stdio); catalog tasks declare their own.")
+    parser.add_argument("--entry-point", help="Function name for function-mode tasks.")

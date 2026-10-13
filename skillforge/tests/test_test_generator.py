@@ -102,6 +102,34 @@ def test_rejects_duplicate_inputs():
         generate_tests(client, addition_spec(), max_generation_attempts=1)
 
 
+def test_accepts_generated_empty_line_when_problem_explicitly_allows_it():
+    client = ResponseClient([json.dumps([
+        {"input": "\n", "expected_output": "YES", "category": "edge"},
+        {"input": "([])", "expected_output": "YES", "category": "normal"},
+    ])])
+    spec = TaskSpec(
+        problem_statement="Check bracket nesting. An empty line is valid.",
+        problem_type="string",
+        constraints="",
+    )
+
+    suite = generate_tests(client, spec)
+
+    assert suite.cases[0].input == "\n"
+    assert suite.cases[0].expected_output == "YES"
+
+
+@pytest.mark.parametrize("contract", ["Read a non-empty line.", "An empty line is invalid."])
+def test_rejects_generated_empty_line_when_problem_does_not_allow_it(contract):
+    client = ResponseClient([json.dumps([
+        {"input": "\n", "expected_output": "YES", "category": "edge"},
+    ])])
+    spec = TaskSpec(problem_statement=contract, problem_type="string", constraints="")
+
+    with pytest.raises(ValueError, match="empty input not allowed"):
+        generate_tests(client, spec, max_generation_attempts=1)
+
+
 def test_loads_trusted_tests(tmp_path):
     path = tmp_path / "tests.json"
     path.write_text(json.dumps([

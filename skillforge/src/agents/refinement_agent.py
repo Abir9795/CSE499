@@ -1,30 +1,16 @@
 import json
 
 from src.agents.code_generator import CodeCandidate
+from src.agents.code_prompts import execution_contract, task_context
 from src.utils.parsing import strip_markdown_fence
 
 
-def _task_context(task_spec, previous_candidate):
+def _task_context(task_spec, previous_candidate, contract):
     """Keep the task information identical across both repair arms."""
-    examples = json.dumps(task_spec.examples, ensure_ascii=False, separators=(",", ":"))
-    requirements = json.dumps(
-        {
-            "constraints": task_spec.constraints,
-            "input_format": getattr(task_spec, "input_format", ""),
-            "output_format": getattr(task_spec, "output_format", ""),
-            "expected_complexity": getattr(task_spec, "expected_complexity", ""),
-            "prohibited_operations": getattr(task_spec, "prohibited_operations", []),
-            "required_operations": getattr(task_spec, "required_operations", []),
-            "edge_cases": getattr(task_spec, "edge_cases", []),
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return f"""Problem:
-{task_spec.problem_statement}
+    return f"""{task_context(task_spec)}
 
-Structured requirements: {requirements}
-Examples: {examples}
+Execution contract:
+{contract}
 
 Previous solution:
 {previous_candidate.raw_code}"""
@@ -39,20 +25,25 @@ def refine_code(
     evaluation_report=None,
     feedback_bundle=None,
     feedback_mode="full",
+    *,
+    language="python",
+    execution_mode="stdio",
+    entry_point=None,
 ) -> CodeCandidate:
     """Generate a repaired candidate from bounded multi-grader feedback."""
-    context = _task_context(task_spec, previous_candidate)
+    contract = execution_contract(language, execution_mode, entry_point)
+    context = _task_context(task_spec, previous_candidate, contract)
     if feedback_mode == "scalar_repair":
         # This path never reads failures, reports or collected feedback. Only
         # the task, previous code and aggregate pass count reach the model.
-        system = """You repair incorrect competitive-programming solutions using a test pass count.
-Return ONLY a complete, runnable Python program that reads standard input and prints to
-standard output. Do not include explanations or Markdown fences."""
+        system = f"""You repair incorrect competitive-programming solutions using a test pass count.
+Execution contract (authoritative):
+{contract}"""
         prompt = f"""{context}
 
 Passed: {verification_result.passed}/{verification_result.total}
 
-Return an improved complete Python program. Keep the required input/output format unchanged.
+Return an improved solution that follows the execution contract and task requirements.
 The solution must be different from the previous one. Try a different approach if needed."""
         return _generate_repair(client, previous_candidate, prompt, system, temperature)
     if feedback_mode != "full":
@@ -62,9 +53,9 @@ The solution must be different from the previous one. Try a different approach i
     if not failures and verification_result.first_failure:
         failures = [verification_result.first_failure]
 
-    system = """You repair incorrect competitive-programming solutions using evaluation feedback.
-Return ONLY a complete, runnable Python program. It must read from standard input and print to
-standard output. Do not include explanations or Markdown fences.
+    system = f"""You repair incorrect competitive-programming solutions using evaluation feedback.
+Execution contract (authoritative):
+{contract}
 Trusted functional tests, runtime evidence, and deterministic constraint checks are authoritative.
 LLM-judge feedback is advisory: use it to investigate the code, but never use it to dismiss trusted
 test failures, change expected outputs, or ignore a proven constraint violation."""
@@ -138,8 +129,8 @@ Candidate repair feedback:
 {collected_feedback}
 
 Diagnose the evidence, address every deterministic failure or violation, and return a corrected
-complete Python program. Treat advisory feedback as a hypothesis to verify against the task.
-Keep the required input/output format unchanged.
+solution following the execution contract. Treat advisory feedback as a hypothesis to verify against the task.
+Keep the required function signature or input/output format unchanged.
 The solution must be different from the previous one. Try a different approach if needed."""
 
     return _generate_repair(client, previous_candidate, prompt, system, temperature)

@@ -4,6 +4,7 @@ import json
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
 from src.agents.task_spec_cache import DEFAULT_TASK_SPEC_CACHE, TaskSpecCache, add_cache_arguments
 from src.benchmark import DEFAULT_BENCHMARK_PATH, load_benchmark, run_benchmark
+from src.benchmark.runner import select_benchmark_tasks
 from src.experiments import add_experiment_arguments, validate_experiment
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
 
@@ -19,13 +20,13 @@ def print_task(result) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a fixed SkillForge prompt on a trusted benchmark."
+        description="Run a fixed SkillForge prompt on the shared problem catalog."
     )
     parser.add_argument(
         "benchmark",
         nargs="?",
         default=str(DEFAULT_BENCHMARK_PATH),
-        help=f"Benchmark JSON file (default: {DEFAULT_BENCHMARK_PATH}).",
+        help=f"Problem catalog JSON file (default: {DEFAULT_BENCHMARK_PATH}).",
     )
     parser.add_argument(
         "--split",
@@ -84,18 +85,19 @@ def main() -> None:
             raise ValueError("--resume requires --run-id")
         if args.no_history and (args.resume or args.run_id is not None):
             raise ValueError("--run-id/--resume require history storage")
+        dataset = load_benchmark(args.benchmark)
+        select_benchmark_tasks(dataset, args.split, args.category, args.language)
         client, judge_client = build_clients(
             model=args.model,
             judge_model=args.judge_model,
             llm_judge=args.llm_judge,
         )
-        dataset = load_benchmark(args.benchmark)
         if not args.no_history:
             history_store = ExperimentStore(args.history_db)
         print("Generator model:", client.model)
         print("Judge model:", judge_client.model if judge_client else "disabled")
         print("Configuration:", mode)
-        print("Language:", language)
+        print("Language:", args.language or "from catalog")
         print("Seed:", args.seed if args.seed is not None else "unseeded")
         summary = run_benchmark(
             client,
@@ -109,7 +111,7 @@ def main() -> None:
             on_task_complete=print_task,
             config_name=args.config,
             seed=args.seed,
-            language=language,
+            language=args.language,
             run_id=args.run_id,
             resume=args.resume,
             task_spec_cache=(

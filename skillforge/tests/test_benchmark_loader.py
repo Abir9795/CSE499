@@ -3,7 +3,9 @@ import json
 
 import pytest
 
-from src.benchmark.loader import BenchmarkFormatError, load_benchmark
+from src.benchmark.loader import (
+    DEFAULT_PROBLEM_CATALOG_PATH, BenchmarkFormatError, load_benchmark, select_task,
+)
 
 
 def valid_task():
@@ -30,17 +32,36 @@ def write_benchmark(path, tasks, schema_version=1):
     )
 
 
-def test_loads_manually_verified_sample_benchmark():
-    dataset = load_benchmark("benchmark/sample_benchmark.json")
+def test_loads_shared_problem_catalog_from_any_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dataset = load_benchmark(DEFAULT_PROBLEM_CATALOG_PATH)
 
-    assert len(dataset.tasks) == 3
+    assert [task.task_id for task in dataset.tasks] == [
+        "arithmetic_sum_001", "array_second_distinct_001",
+        "sorting_without_builtin_001", "arithmetic_square_001",
+    ]
     assert [task.split for task in dataset.tasks] == [
         "train",
         "validation",
         "hidden",
+        "train",
     ]
     assert all(task.visible_tests.cases for task in dataset.tasks)
     assert all(task.hidden_tests.cases for task in dataset.tasks)
+
+
+def test_selects_one_problem_with_its_own_test_suites():
+    dataset = load_benchmark(DEFAULT_PROBLEM_CATALOG_PATH)
+    task = select_task(dataset, "arithmetic_square_001")
+    assert "multiplied by itself" in task.problem_statement
+    assert task.visible_tests.cases[0].expected_output == "25"
+    assert {case.input for case in task.hidden_tests.cases} == {"0", "1", "1000000"}
+
+
+def test_rejects_unknown_catalog_task():
+    dataset = load_benchmark(DEFAULT_PROBLEM_CATALOG_PATH)
+    with pytest.raises(BenchmarkFormatError, match="unknown task ID.*--list-tasks"):
+        select_task(dataset, "missing-task")
 
 
 def test_rejects_duplicate_task_ids(tmp_path):

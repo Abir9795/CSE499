@@ -10,7 +10,10 @@
       "split": "train",
       "visible_tests": [
         {"input": "2 3", "expected_output": "5", "category": "normal"},
-        {"input": "-2 7", "expected_output": "5", "category": "edge"}
+        {"input": "-2 7", "expected_output": "5", "category": "edge"},
+        {"input": "100 250", "expected_output": "350", "category": "normal"},
+        {"input": "-5 -8", "expected_output": "-13", "category": "edge"},
+        {"input": "2147483647 1", "expected_output": "2147483648", "category": "stress"}
       ],
       "hidden_tests": [
         {"input": "0 0", "expected_output": "0", "category": "edge"},
@@ -47,6 +50,24 @@
       "hidden_tests": [
         {"input": "1\n7", "expected_output": "7", "category": "edge"},
         {"input": "6\n0 -2 5 5 1 -2", "expected_output": "-2 -2 0 1 5 5", "category": "stress"}
+      ]
+    },
+    {
+      "task_id": "arithmetic_square_001",
+      "title": "Square an Integer",
+      "problem_statement": "Read one integer n from standard input and print n multiplied by itself. The integer may be negative, zero, or positive.",
+      "category": "arithmetic",
+      "difficulty": "easy",
+      "split": "train",
+      "visible_tests": [
+        {"input": "5", "expected_output": "25", "category": "normal"},
+        {"input": "12", "expected_output": "144", "category": "normal"},
+        {"input": "-4", "expected_output": "16", "category": "normal"}
+      ],
+      "hidden_tests": [
+        {"input": "0", "expected_output": "0", "category": "edge"},
+        {"input": "1", "expected_output": "1", "category": "edge"},
+        {"input": "1000000", "expected_output": "1000000000000", "category": "stress"}
       ]
     }
   ]

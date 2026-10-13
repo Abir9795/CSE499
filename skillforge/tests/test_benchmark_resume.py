@@ -70,7 +70,7 @@ def test_hidden_interruption_reuses_frozen_code_and_taskspec_without_cache(tmp_p
     original_verify = runner_module.verify
     codes = []
 
-    def interrupt_hidden(code, suite, max_failures):
+    def interrupt_hidden(code, suite, max_failures, **options):
         assert max_failures == 0
         codes.append(code)
         raise KeyboardInterrupt()
@@ -86,10 +86,10 @@ def test_hidden_interruption_reuses_frozen_code_and_taskspec_without_cache(tmp_p
     for file in cache.directory.glob("*.json"):
         file.unlink()  # cached TaskSpec is unnecessary once selection is frozen
 
-    def complete_hidden(code, suite, max_failures):
+    def complete_hidden(code, suite, max_failures, **options):
         codes.append(code)
         assert max_failures == 0
-        return original_verify(code, suite, max_failures=max_failures)
+        return original_verify(code, suite, max_failures=max_failures, **options)
 
     monkeypatch.setattr(runner_module, "verify", complete_hidden)
     client = BenchmarkClient()

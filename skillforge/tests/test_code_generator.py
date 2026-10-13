@@ -78,7 +78,8 @@ def test_generate_code_uses_active_prompt_and_records_metadata(tmp_path):
     assert candidate.prompt_version == "P0"
     assert candidate.model_name == "test-coder:1b"
     assert candidate.generation_temperature == 0.15
-    assert client.requests[0]["system"] == "ACTIVE SYSTEM PROMPT"
+    assert "ACTIVE SYSTEM PROMPT" in client.requests[0]["system"]
+    assert "Execution contract (authoritative):" in client.requests[0]["system"]
 
 
 def test_generate_code_can_evaluate_non_active_prompt(tmp_path):
@@ -93,7 +94,7 @@ def test_generate_code_can_evaluate_non_active_prompt(tmp_path):
     )
 
     assert candidate.prompt_version == "P1"
-    assert client.requests[0]["system"] == "CANDIDATE SYSTEM PROMPT"
+    assert "CANDIDATE SYSTEM PROMPT" in client.requests[0]["system"]
     assert registry.active_prompt.prompt_id == "P0"
 
 

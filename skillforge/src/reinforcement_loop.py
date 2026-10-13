@@ -6,10 +6,10 @@ from src.agents.code_generator import CodeCandidate, generate_code
 from src.agents.llm_client import CallCountingClient, validate_judge_pair
 from src.agents.refinement_agent import refine_code
 from src.agents.task_spec import TaskSpec, parse_task
-from src.agents.test_generator import TestSuite, generate_tests
+from src.agents.test_generator import TestSuite, generate_tests, validate_generation_tests
 from src.evaluation.models import EvaluationReport, EvaluationStatus
 from src.evaluation.pipeline import evaluate_candidate
-from src.experiments import DEFAULT_EXPERIMENT_ATTEMPTS, validate_experiment
+from src.experiments import DEFAULT_EXPERIMENT_ATTEMPTS, validate_experiment, validate_generation_execution
 from src.feedback.collector import collect_feedback
 from src.feedback.models import FeedbackBundle
 from src.verifier.outcome_verifier import VerificationResult, verify
@@ -54,6 +54,8 @@ class CandidateRefinementResult:
     task_spec_cache_hit: bool = False
     analysis_model_calls: int = 0
     analysis_wall_clock_seconds: float = 0.0
+    execution_mode: str = "stdio"
+    entry_point: Optional[str] = None
 
     @property
     def best_attempt(self) -> Optional[AttemptResult]:
@@ -159,6 +161,8 @@ def run_candidate_refinement_loop(
     complete_history: bool = True,
     task_spec_cache=None,
     benchmark_run_id: Optional[str] = None,
+    execution_mode: str = "stdio",
+    entry_point: Optional[str] = None,
 ) -> CandidateRefinementResult:
     """Generate, evaluate, and repair candidates for one programming task.
 
@@ -171,6 +175,8 @@ def run_candidate_refinement_loop(
     defer history completion until hidden evaluation has finished.
     """
     mode, language = validate_experiment(config_name, seed, language)
+    language, execution_mode, entry_point = validate_generation_execution(language, execution_mode, entry_point)
+    validate_generation_tests(trusted_test_suite, execution_mode)
     validate_judge_pair(client, judge_client)
     if not problem_statement.strip():
         raise ValueError("problem_statement cannot be empty")
@@ -196,6 +202,7 @@ def run_candidate_refinement_loop(
     if task_spec_cache is not None:
         task_spec, cache_hit, cached_analysis_calls = task_spec_cache.get_or_analyze(
             client, problem_statement, language,
+            execution_mode=execution_mode, entry_point=entry_point,
         )
     task_key = task_id if task_id is not None else problem_statement.strip()
     client = CallCountingClient(client, seed=seed, task_key=task_key)
@@ -230,6 +237,7 @@ def run_candidate_refinement_loop(
         prompt_registry=prompt_registry,
         prompt_id=prompt_id,
         temperature=generation_temperature,
+        language=language, execution_mode=execution_mode, entry_point=entry_point,
     )
     result = CandidateRefinementResult(
         task_spec=task_spec,
@@ -244,6 +252,8 @@ def run_candidate_refinement_loop(
         task_spec_cache_hit=cache_hit,
         analysis_model_calls=analysis_calls,
         analysis_wall_clock_seconds=analysis_seconds,
+        execution_mode=execution_mode,
+        entry_point=entry_point,
     )
     if history_store is not None:
         result.history_run_id = history_store.start_run(
@@ -262,6 +272,8 @@ def run_candidate_refinement_loop(
             attempt_budget_source=attempt_budget_source,
             attempt_budget_reason=attempt_budget_reason,
             benchmark_run_id=benchmark_run_id,
+            execution_mode=execution_mode,
+            entry_point=entry_point,
         )
     best_rank = None
     seen_candidates = {_candidate_fingerprint(candidate.raw_code): 1}
@@ -274,6 +286,7 @@ def run_candidate_refinement_loop(
             candidate.raw_code,
             test_suite,
             max_failures=max_feedback_failures,
+            language=language, execution_mode=execution_mode, entry_point=entry_point,
         )
         evaluation_report, feedback = evaluate_candidate(
             task_spec,
@@ -283,6 +296,7 @@ def run_candidate_refinement_loop(
             judge_client=judge_client,
             judge_max_attempts=judge_max_attempts,
             judge_review_threshold=judge_review_threshold,
+            language=language, execution_mode=execution_mode, entry_point=entry_point,
         )
         attempt = AttemptResult(
             attempt_number=attempt_number,
@@ -319,6 +333,7 @@ def run_candidate_refinement_loop(
                 candidate = generate_code(
                     client, task_spec, temperature=generation_temperature,
                     prompt_registry=prompt_registry, prompt_id=candidate.prompt_version,
+                    language=language, execution_mode=execution_mode, entry_point=entry_point,
                 )
             continue
 
@@ -344,6 +359,7 @@ def run_candidate_refinement_loop(
                     evaluation_report=evaluation_report,
                     feedback_bundle=feedback,
                     feedback_mode=("scalar_repair" if mode == "scalar_repair" else "full"),
+                    language=language, execution_mode=execution_mode, entry_point=entry_point,
                 )
                 if config_name is not None:
                     # Ablations count every generated candidate, even repeated

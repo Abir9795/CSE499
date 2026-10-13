@@ -5,20 +5,59 @@ import time
 from typing import Callable, Iterable, Optional
 
 from src.agents.llm_client import CallCountingClient, validate_judge_pair
+from src.agents.code_prompts import prompt_template_identity
+from src.agents.test_generator import validate_generation_tests
 from src.agents.task_spec_cache import (
     ANALYSIS_SEED, CACHE_VERSION, analyzer_fingerprint, task_spec_from_dict,
 )
 from src.benchmark.loader import VALID_CATEGORIES, VALID_SPLITS
 from src.benchmark.models import BenchmarkSummary, TaskBenchmarkResult
-from src.evaluation.pipeline import evaluate_candidate
+from src.evaluation.pipeline import evaluate_candidate, evaluation_policy_identity
 from src.evolution.prompt_registry import load_default_registry
-from src.experiments import SEED_POLICY, validate_experiment
+from src.experiments import SEED_POLICY, validate_experiment, validate_generation_execution
 from src.reinforcement_loop import run_candidate_refinement_loop
 from src.verifier.outcome_verifier import verify
 
 
 def _selection(values: Optional[Iterable[str]]):
     return set(values) if values is not None else None
+
+
+def select_benchmark_tasks(dataset, splits=None, categories=None, language=None):
+    """Resolve and validate task contracts before model calls or history writes."""
+    selected_splits = _selection(splits)
+    selected_categories = _selection(categories)
+    if selected_splits is not None:
+        unknown_splits = selected_splits.difference(VALID_SPLITS)
+        if unknown_splits:
+            raise ValueError(
+                f"unknown benchmark split: {', '.join(sorted(unknown_splits))}"
+            )
+    if selected_categories is not None:
+        unknown_categories = selected_categories.difference(VALID_CATEGORIES)
+        if unknown_categories:
+            raise ValueError(
+                "unknown benchmark category: "
+                f"{', '.join(sorted(unknown_categories))}"
+            )
+    selected_tasks = [
+        task
+        for task in dataset.tasks
+        if (selected_splits is None or task.split in selected_splits)
+        and (selected_categories is None or task.category in selected_categories)
+        and (language is None or task.language == language)
+    ]
+    if not selected_tasks:
+        raise ValueError("benchmark selection contains no tasks")
+    if len({task.task_id for task in dataset.tasks}) != len(dataset.tasks):
+        raise ValueError("benchmark task IDs must be unique")
+    for task in selected_tasks:
+        validate_experiment(language=task.language)
+        validate_generation_execution(task.language, task.execution_mode, task.entry_point)
+        validate_generation_tests(task.visible_tests, task.execution_mode)
+        validate_generation_tests(task.hidden_tests, task.execution_mode)
+
+    return selected_tasks
 
 
 def run_benchmark(
@@ -51,46 +90,25 @@ def run_benchmark(
     A hard kill can lose work since the last checkpoint, including its costs;
     caught interruptions record their costs separately from completed results.
     """
+    selected_language = language
     _, language = validate_experiment(config_name, seed, language)
     validate_judge_pair(client, judge_client)
     if (run_id is not None or resume) and history_store is None:
         raise ValueError("--run-id/--resume require history storage")
     if resume and not run_id:
         raise ValueError("--resume requires --run-id")
-    selected_splits = _selection(splits)
-    selected_categories = _selection(categories)
-    if selected_splits is not None:
-        unknown_splits = selected_splits.difference(VALID_SPLITS)
-        if unknown_splits:
-            raise ValueError(
-                f"unknown benchmark split: {', '.join(sorted(unknown_splits))}"
-            )
-    if selected_categories is not None:
-        unknown_categories = selected_categories.difference(VALID_CATEGORIES)
-        if unknown_categories:
-            raise ValueError(
-                "unknown benchmark category: "
-                f"{', '.join(sorted(unknown_categories))}"
-            )
-    selected_tasks = [
-        task
-        for task in dataset.tasks
-        if (selected_splits is None or task.split in selected_splits)
-        and (selected_categories is None or task.category in selected_categories)
-    ]
-    if not selected_tasks:
-        raise ValueError("benchmark selection contains no tasks")
-    if len({task.task_id for task in dataset.tasks}) != len(dataset.tasks):
-        raise ValueError("benchmark task IDs must be unique")
+    selected_tasks = select_benchmark_tasks(dataset, splits, categories, selected_language)
 
     registry = prompt_registry or load_default_registry()
     selected_prompt = registry.get(prompt_id) if prompt_id else registry.active_prompt
     manifest = {
         "protocol": 1,
-        "dataset_hash": _fingerprint(sorted((asdict(t) for t in dataset.tasks), key=lambda t: t["task_id"])),
+        "dataset_hash": _fingerprint(sorted((_dataset_record(t) for t in dataset.tasks), key=lambda t: t["task_id"])),
         "task_ids": sorted(task.task_id for task in selected_tasks),
         "prompt_id": selected_prompt.prompt_id,
         "prompt_hash": _fingerprint(selected_prompt.prompt_text),
+        "prompt_templates": prompt_template_identity(),
+        "evaluation_policy": evaluation_policy_identity(),
         "generator_model": getattr(client, "model", "unknown"),
         "judge_model": getattr(judge_client, "model", "unknown") if judge_client is not None else None,
         "config_name": config_name,  # None preserves the legacy dynamic/repeat policy.
@@ -146,7 +164,9 @@ def run_benchmark(
                     benchmark_split=task.split,
                     config_name=config_name,
                     seed=seed,
-                    language=language,
+                    language=task.language,
+                    execution_mode=task.execution_mode,
+                    entry_point=task.entry_point,
                     complete_history=False,
                     task_spec_cache=task_spec_cache,
                     benchmark_run_id=run_id,
@@ -161,7 +181,10 @@ def run_benchmark(
             spec = task_spec_from_dict(checkpoint["task_spec"], task.problem_statement)
             # A kill between execution and commit may replay hidden evaluation,
             # but always against this frozen code, never a regenerated solution.
-            hidden_verification = verify(checkpoint["code"], task.hidden_tests, max_failures=0)
+            hidden_verification = verify(
+                checkpoint["code"], task.hidden_tests, max_failures=0,
+                language=task.language, execution_mode=task.execution_mode, entry_point=task.entry_point,
+            )
             hidden_judge = None
             if judge_counter is not None:
                 hidden_judge = CallCountingClient(judge_counter, seed=seed, task_key=task.task_id)
@@ -170,6 +193,7 @@ def run_benchmark(
                 spec, checkpoint["code"], hidden_verification, test_source="trusted",
                 judge_client=hidden_judge, judge_max_attempts=judge_max_attempts,
                 judge_review_threshold=judge_review_threshold,
+                language=task.language, execution_mode=task.execution_mode, entry_point=task.entry_point,
             )
             values = dict(checkpoint["result"])
             values["model_calls"] += hidden_judge.call_count if hidden_judge else 0
@@ -203,6 +227,15 @@ def _fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _dataset_record(task):
+    record = asdict(task)
+    # An additive default must not invalidate existing stdio sweep manifests.
+    if task.language == "python" and task.execution_mode == "stdio" and task.entry_point is None:
+        for field in ("language", "execution_mode", "entry_point"):
+            record.pop(field)
+    return record
+
+
 def _visible_checkpoint(task, result):
     """Only the fixed selected candidate crosses into the hidden phase."""
     best = result.best_attempt
@@ -229,5 +262,7 @@ def _visible_checkpoint(task, result):
             "task_spec_cache_hit": result.task_spec_cache_hit,
             "analysis_model_calls": result.analysis_model_calls,
             "analysis_wall_clock_seconds": result.analysis_wall_clock_seconds,
+            "execution_mode": result.execution_mode,
+            "entry_point": result.entry_point,
         },
     }

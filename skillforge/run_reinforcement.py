@@ -1,16 +1,18 @@
 import argparse
 
 from src.agents.llm_client import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, build_clients
-from src.agents.test_generator import load_test_suite
+from src.agents.test_generator import load_test_suite, validate_generation_tests
 from src.agents.task_spec_cache import TaskSpecCache, add_cache_arguments
-from src.experiments import add_experiment_arguments, validate_experiment
+from src.benchmark.loader import DEFAULT_PROBLEM_CATALOG_PATH, load_benchmark, select_task
+from src.experiments import (
+    add_experiment_arguments, add_execution_arguments, validate_experiment,
+    validate_generation_execution,
+)
 from src.history import DEFAULT_HISTORY_PATH, ExperimentStore
 from src.reinforcement_loop import AttemptResult, run_candidate_refinement_loop
 
 
-DEFAULT_PROBLEM = """Read two integers from standard input and print their sum.
-Input: two space-separated integers a and b.
-Output: one integer, a + b."""
+DEFAULT_TASK_ID = "arithmetic_sum_001"
 
 
 def print_attempt(attempt: AttemptResult) -> None:
@@ -80,8 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "problem",
         nargs="?",
-        default=DEFAULT_PROBLEM,
-        help="Problem to solve (uses an addition problem by default).",
+        help=(
+            "Ad hoc problem statement. Omit to select a catalog problem with "
+            f"--task-id (default: {DEFAULT_TASK_ID})."
+        ),
     )
     parser.add_argument(
         "--max-attempts",
@@ -96,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tests",
         metavar="JSON_FILE",
-        help="Use manually verified JSON tests instead of model-generated tests.",
+        help="Use manually verified JSON tests with an explicit ad hoc problem statement.",
     )
     parser.add_argument(
         "--max-consecutive-repeats",
@@ -139,17 +143,61 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task-id",
-        help="Stable task ID for benchmark/history analysis.",
+        help=f"Select a problem and its visible tests from the catalog (default: {DEFAULT_TASK_ID}).",
+    )
+    parser.add_argument(
+        "--catalog",
+        metavar="JSON_FILE",
+        help=f"Problem catalog (default: {DEFAULT_PROBLEM_CATALOG_PATH}).",
+    )
+    parser.add_argument(
+        "--list-tasks",
+        action="store_true",
+        help="List catalog task IDs and titles without model calls or history writes.",
+    )
+    parser.add_argument(
+        "--history-task-id",
+        help="Optional history label for an explicit ad hoc problem; does not select a task.",
     )
     parser.add_argument(
         "--benchmark-split",
         choices=("adhoc", "train", "validation", "hidden"),
-        default="adhoc",
-        help="History split label for this task (default: adhoc).",
+        help="History split for an ad hoc problem (default: adhoc); catalog tasks use their stored split.",
     )
     add_experiment_arguments(parser)
+    add_execution_arguments(parser)
     add_cache_arguments(parser)
     return parser
+
+
+def resolve_task(args):
+    """Resolve one source of task data before opening history or creating clients."""
+    if args.problem is not None:
+        if args.task_id is not None or args.catalog is not None:
+            raise ValueError("an ad hoc problem cannot be combined with --task-id or --catalog")
+        if not args.problem.strip():
+            raise ValueError("problem statement cannot be empty")
+        args.language = args.language or "python"
+        args.execution_mode = args.execution_mode or "stdio"
+        validate_experiment(args.config, args.seed, args.language)
+        validate_generation_execution(args.language, args.execution_mode, args.entry_point)
+        suite = load_test_suite(args.tests, execution_mode=args.execution_mode) if args.tests else None
+        return args.problem, suite, args.history_task_id, args.benchmark_split or "adhoc"
+
+    if args.tests is not None or args.history_task_id is not None or args.benchmark_split is not None:
+        raise ValueError(
+            "--tests, --history-task-id and --benchmark-split require an explicit ad hoc "
+            "problem statement; catalog tasks use their stored tests, ID and split"
+        )
+    dataset = load_benchmark(args.catalog or DEFAULT_PROBLEM_CATALOG_PATH)
+    task = select_task(dataset, args.task_id if args.task_id is not None else DEFAULT_TASK_ID)
+    for name in ("language", "execution_mode", "entry_point"):
+        supplied = getattr(args, name)
+        stored = getattr(task, name)
+        if supplied is not None and supplied != stored:
+            raise ValueError(f"--{name.replace('_', '-')} conflicts with catalog task {task.task_id}")
+        setattr(args, name, stored)
+    return task.problem_statement, task.visible_tests, task.task_id, task.split
 
 
 def main() -> None:
@@ -158,7 +206,19 @@ def main() -> None:
 
     history_store = None
     try:
+        if args.list_tasks:
+            if any(value is not None for value in (
+                args.problem, args.task_id, args.tests, args.history_task_id, args.benchmark_split,
+            )):
+                raise ValueError("--list-tasks cannot be combined with task selection or ad hoc inputs")
+            dataset = load_benchmark(args.catalog or DEFAULT_PROBLEM_CATALOG_PATH)
+            for task in dataset.tasks:
+                print(f"{task.task_id}\t{task.split}\t{task.title}")
+            return
+        problem, trusted_suite, task_id, benchmark_split = resolve_task(args)
         mode, language = validate_experiment(args.config, args.seed, args.language)
+        validate_generation_execution(language, args.execution_mode, args.entry_point)
+        validate_generation_tests(trusted_suite, args.execution_mode)
         client, judge_client = build_clients(
             model=args.model,
             judge_model=args.judge_model,
@@ -166,17 +226,20 @@ def main() -> None:
         )
         if not args.no_history:
             history_store = ExperimentStore(args.history_db)
-        trusted_suite = load_test_suite(args.tests) if args.tests else None
         source = "trusted" if trusted_suite else "generated"
+        if args.problem is None:
+            print("Catalog task:", task_id)
+            print("Using visible tests; run run_benchmark.py for hidden-test evaluation.")
         print(f"Preparing one fixed {source} test suite and an initial solution...")
         print("Generator model:", client.model)
         print("Judge model:", judge_client.model if judge_client else "disabled")
         print("Configuration:", mode)
         print("Language:", language)
+        print("Execution mode:", args.execution_mode)
         print("Seed:", args.seed if args.seed is not None else "unseeded")
         result = run_candidate_refinement_loop(
             client=client,
-            problem_statement=args.problem,
+            problem_statement=problem,
             max_attempts=args.max_attempts,
             max_consecutive_repeats=args.max_consecutive_repeats,
             on_attempt=print_attempt,
@@ -184,11 +247,13 @@ def main() -> None:
             prompt_id=args.prompt_id,
             judge_client=judge_client,
             history_store=history_store,
-            task_id=args.task_id,
-            benchmark_split=args.benchmark_split,
+            task_id=task_id,
+            benchmark_split=benchmark_split,
             config_name=args.config,
             seed=args.seed,
             language=language,
+            execution_mode=args.execution_mode,
+            entry_point=args.entry_point,
             task_spec_cache=(
                 TaskSpecCache(args.task_spec_cache_dir)
                 if args.task_spec_cache_dir and not args.no_task_spec_cache else None

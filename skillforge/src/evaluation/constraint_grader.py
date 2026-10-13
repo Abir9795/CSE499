@@ -2,6 +2,7 @@ import ast
 import re
 from typing import Callable, List, Optional
 
+from src.benchmark.language import Language
 from src.evaluation.models import ConstraintGrade
 
 
@@ -201,11 +202,20 @@ def _required_finder(constraint: str) -> Optional[ViolationFinder]:
     return None
 
 
-def grade_constraint_adherence(code: str, task_spec) -> ConstraintGrade:
-    """Check only constraints that can be established conservatively via AST."""
+def grade_constraint_adherence(code: str, task_spec, *, language="python") -> ConstraintGrade:
+    """Check Python constraints via AST; leave other languages unverified."""
+    language = Language(language)
     prohibited = list(task_spec.prohibited_operations)
     required = list(task_spec.required_operations)
     constraints = prohibited + required
+    if language != Language.PYTHON:
+        # No Python parsing or heuristics can establish constraints in another
+        # language. With no declared operations there is nothing to verify.
+        return ConstraintGrade(
+            score=None,
+            coverage=0.0 if constraints else 1.0,
+            unverified_constraints=constraints,
+        )
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError) as exc:
