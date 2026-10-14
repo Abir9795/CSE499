@@ -1,0 +1,19 @@
+EvalPlus v0.3.1 input restoration (mbpp_deserialize_inputs).
+Copyright EvalPlus contributors. Licensed under Apache License 2.0.
+Upstream: https://github.com/evalplus/evalplus/tree/v0.3.1
+The function is extracted unchanged; only the module documentation was added.
+Upstream mbpp.py SHA-256: 186e09b7b14dcf12ed259dfca1d6644a1c266c1bbac41c917fd3c0449a734b24
+
+The generated benchmark uses MBPP+ v0.2.0 from EvalPlus, derived from
+Google Research MBPP (CC BY 4.0). Preserve source attribution when sharing.
+https://github.com/evalplus/mbppplus_release/releases/tag/v0.2.0
+https://github.com/google-research/google-research/tree/master/mbpp
+https://creativecommons.org/licenses/by/4.0/
+Dataset license attribution: https://huggingface.co/datasets/google-research-datasets/mbpp
+
+Comparison rules adapted from EvalPlus v0.3.1 evalplus/eval/__init__.py,
+whose header attributes portions to OpenAI under the MIT license:
+https://github.com/evalplus/evalplus/blob/v0.3.1/evalplus/eval/__init__.py
+See ORACLE_MIT_LICENSE.txt.
+The conversion adds native assertions, deterministic selection and custom splits;
+it does not reproduce the original MBPP train/test partition.

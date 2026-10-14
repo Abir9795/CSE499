@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 skillforge/data/*.sqlite3*
 skillforge/data/task_spec_cache/
+skillforge/data/mbpp_conversion_cache/
 *.pptx
 *.docx
 *.pdf
