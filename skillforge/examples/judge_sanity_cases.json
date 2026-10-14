@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "integer_sum",
+      "task_spec": {"problem_statement": "Read two integers a and b from standard input and print their sum.", "problem_type": "math", "constraints": "Integers may be negative or zero."},
+      "tests": [
+        {"input": "2 3", "expected_output": "5", "category": "normal"},
+        {"input": "-4 7", "expected_output": "3", "category": "edge"},
+        {"input": "0 0", "expected_output": "0", "category": "edge"}
+      ],
+      "correct": "a, b = map(int, input().split())\nprint(a + b)",
+      "broken": "a, b = map(int, input().split())\nprint(a - b)",
+      "defect_explanation": "Subtracts the second integer instead of adding it.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "list_maximum",
+      "task_spec": {"problem_statement": "Read a nonempty line of space-separated integers and print the largest value.", "problem_type": "array", "constraints": "The list may contain only negative integers."},
+      "tests": [
+        {"input": "3 8 1", "expected_output": "8", "category": "normal"},
+        {"input": "-9 -2 -7", "expected_output": "-2", "category": "edge"},
+        {"input": "-5", "expected_output": "-5", "category": "edge"}
+      ],
+      "correct": "values = list(map(int, input().split()))\nprint(max(values))",
+      "broken": "values = list(map(int, input().split()))\nlargest = 0\nfor value in values:\n    if value > largest:\n        largest = value\nprint(largest)",
+      "defect_explanation": "Initializing the maximum to zero fails on all-negative input.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "even_count",
+      "task_spec": {"problem_statement": "Read a nonempty line of integers and print how many are even.", "problem_type": "array", "constraints": "Zero and negative even numbers must be counted."},
+      "tests": [
+        {"input": "1 2 4", "expected_output": "2", "category": "normal"},
+        {"input": "0 -2 -3", "expected_output": "2", "category": "edge"},
+        {"input": "7", "expected_output": "0", "category": "edge"}
+      ],
+      "correct": "values = list(map(int, input().split()))\nprint(sum(value % 2 == 0 for value in values))",
+      "broken": "values = list(map(int, input().split()))\nprint(sum(value % 2 == 1 for value in values))",
+      "defect_explanation": "Counts odd values instead of even values.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "inclusive_sum",
+      "task_spec": {"problem_statement": "Read an integer n and print the sum of all integers from 1 through n, inclusive. For n = 0, print 0.", "problem_type": "math", "constraints": "0 <= n <= 1000."},
+      "tests": [
+        {"input": "5", "expected_output": "15", "category": "normal"},
+        {"input": "1", "expected_output": "1", "category": "edge"},
+        {"input": "0", "expected_output": "0", "category": "edge"}
+      ],
+      "correct": "n = int(input())\nprint(n * (n + 1) // 2)",
+      "broken": "n = int(input())\nprint(sum(range(n)))",
+      "defect_explanation": "The range excludes n, so positive inputs lose the last term.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "palindrome",
+      "task_spec": {"problem_statement": "Read a nonempty string on one line. Print YES if it reads the same forwards and backwards, otherwise print NO. Comparisons are case-sensitive.", "problem_type": "string", "constraints": "The input contains letters only."},
+      "tests": [
+        {"input": "level", "expected_output": "YES", "category": "normal"},
+        {"input": "abca", "expected_output": "NO", "category": "edge"},
+        {"input": "a", "expected_output": "YES", "category": "edge"}
+      ],
+      "correct": "text = input()\nprint('YES' if text == text[::-1] else 'NO')",
+      "broken": "text = input()\nprint('YES' if text[0] == text[-1] else 'NO')",
+      "defect_explanation": "Checks the end characters but ignores mismatches in the middle.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "reverse_words",
+      "task_spec": {"problem_statement": "Read one line of words separated by arbitrary whitespace. Print the words in reverse order separated by exactly one space.", "problem_type": "string", "constraints": "At least one word; separators may include repeated spaces or tabs."},
+      "tests": [
+        {"input": "red blue green", "expected_output": "green blue red", "category": "normal"},
+        {"input": "red  blue", "expected_output": "blue red", "category": "edge"},
+        {"input": "red\tblue", "expected_output": "blue red", "category": "edge"}
+      ],
+      "correct": "words = input().split()\nprint(' '.join(reversed(words)))",
+      "broken": "words = input().split(' ')\nprint(' '.join(reversed(words)))",
+      "defect_explanation": "Splitting on a literal space retains empty words and misses tabs.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "second_distinct",
+      "task_spec": {"problem_statement": "Read a line of integers and print the second-largest distinct value.", "problem_type": "array", "constraints": "There are at least two distinct integers. Duplicates are allowed."},
+      "tests": [
+        {"input": "1 3 2", "expected_output": "2", "category": "normal"},
+        {"input": "5 5 3 2", "expected_output": "3", "category": "edge"},
+        {"input": "-1 -1 -4", "expected_output": "-4", "category": "edge"}
+      ],
+      "correct": "values = set(map(int, input().split()))\nprint(sorted(values)[-2])",
+      "broken": "values = list(map(int, input().split()))\nprint(sorted(values)[-2])",
+      "defect_explanation": "Duplicate maxima occupy both highest positions in the sorted list.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "factorial",
+      "task_spec": {"problem_statement": "Read a nonnegative integer n and print n factorial. Zero factorial equals 1.", "problem_type": "math", "constraints": "0 <= n <= 12."},
+      "tests": [
+        {"input": "5", "expected_output": "120", "category": "normal"},
+        {"input": "1", "expected_output": "1", "category": "edge"},
+        {"input": "0", "expected_output": "1", "category": "edge"}
+      ],
+      "correct": "n = int(input())\nresult = 1\nfor value in range(1, n + 1):\n    result *= value\nprint(result)",
+      "broken": "n = int(input())\nresult = n\nfor value in range(1, n):\n    result *= value\nprint(result)",
+      "defect_explanation": "Initializing the product to n produces 0 for zero factorial.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE"]
+    },
+    {
+      "case_id": "floor_average",
+      "task_spec": {"problem_statement": "Read a nonempty line of integers. Print the mathematical floor of their arithmetic mean.", "problem_type": "math", "constraints": "The line may contain a single integer."},
+      "tests": [
+        {"input": "2 4", "expected_output": "3", "category": "normal"},
+        {"input": "7", "expected_output": "7", "category": "edge"},
+        {"input": "-3 -2", "expected_output": "-3", "category": "edge"}
+      ],
+      "correct": "values = list(map(int, input().split()))\nprint(sum(values) // len(values))",
+      "broken": "values = list(map(int, input().split()))\nprint(sum(values) // (len(values) - 1))",
+      "defect_explanation": "Divides by one fewer than the item count and crashes on a singleton.",
+      "expected_failure_codes": ["FUNCTIONAL_TEST_FAILURE", "RUNTIME_EXCEPTION"]
+    },
+    {
+      "case_id": "sort_constraint",
+      "task_spec": {"problem_statement": "Read a nonempty line of integers and print them in ascending order separated by one space. Do not use sorted().", "problem_type": "sorting", "constraints": "Do not use sorted(). list.sort() is allowed.", "prohibited_operations": ["sorted()"]},
+      "tests": [
+        {"input": "3 1 2", "expected_output": "1 2 3", "category": "normal"},
+        {"input": "-1 0 -1", "expected_output": "-1 -1 0", "category": "edge"},
+        {"input": "5", "expected_output": "5", "category": "edge"}
+      ],
+      "correct": "values = list(map(int, input().split()))\nvalues.sort()\nprint(*values)",
+      "broken": "values = list(map(int, input().split()))\nprint(*sorted(values))",
+      "defect_explanation": "Produces the right outputs but uses the explicitly prohibited sorted() operation.",
+      "expected_failure_codes": ["CONSTRAINT_VIOLATION"]
+    }
+  ]
+}

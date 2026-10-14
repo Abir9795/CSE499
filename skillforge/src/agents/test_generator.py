@@ -1,6 +1,29 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, List
-import json
+from src.benchmark.execution_mode import ExecutionMode
+from src.utils.parsing import parse_json_response
+
+VALID_CATEGORIES = frozenset({"normal", "edge", "stress"})
+REQUIRED_FIELDS = frozenset({"input", "expected_output", "category"})
+TEST_SUITE_RESPONSE_SCHEMA = {
+    "type": "array",
+    "minItems": 1,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["input", "expected_output", "category"],
+        "properties": {
+            "input": {"type": "string"},
+            "expected_output": {"type": "string"},
+            "category": {
+                "type": "string",
+                "enum": ["normal", "edge", "stress"],
+            },
+        },
+    },
+}
+
 
 @dataclass
 class TestCase:
@@ -8,19 +31,191 @@ class TestCase:
     expected_output: Any
     category: str  # "normal" | "edge" | "stress"
 
+
+@dataclass
+class FunctionTestCase:
+    """Trusted native assertion source, e.g. ``assert solve((1, 2)) == 3``."""
+
+    assertion: str
+    category: str = "normal"
+
+
 @dataclass
 class TestSuite:
-    cases: List[TestCase] = field(default_factory=list)
+    cases: List[TestCase | FunctionTestCase] = field(default_factory=list)
 
-def generate_tests(client, task_spec) -> TestSuite:
-    system = """You generate test cases for a coding problem. Output ONLY valid JSON: a list of objects
-with keys "input", "expected_output", "category" (one of: normal, edge, stress).
-Include 3 normal cases, 2 edge cases (empty/single/max constraint), 1 stress case.
-No explanation, just the JSON list."""
 
-    prompt = f"Problem: {task_spec.problem_statement}\nExamples: {task_spec.examples}"
-    raw = client.generate(prompt, system=system, temperature=0.3)
-    raw = raw.strip().strip("```json").strip("```").strip()
+def validate_generation_tests(test_suite, execution_mode="stdio"):
+    """Preflight trusted suites before analysis, generation, or history writes."""
+    mode = ExecutionMode(execution_mode)
+    if test_suite is None:
+        if mode == ExecutionMode.FUNCTION:
+            raise ValueError(
+                "function generation requires trusted assertion tests; supply catalog tests "
+                "or --tests with native assertions"
+            )
+        return
+    if not test_suite.cases:
+        raise ValueError("the test suite is empty")
+    expected_type = FunctionTestCase if mode == ExecutionMode.FUNCTION else TestCase
+    if any(not isinstance(case, expected_type) for case in test_suite.cases):
+        raise ValueError(f"test suite cases do not match execution_mode={mode}")
+    if mode == ExecutionMode.FUNCTION:
+        # Programmatic callers bypass the JSON loader. Apply the same assertion,
+        # category and duplicate checks before spending model calls on the task.
+        build_test_suite(
+            [{"assertion": case.assertion, "category": case.category} for case in test_suite.cases],
+            execution_mode=mode,
+        )
 
-    cases = [TestCase(**c) for c in json.loads(raw)]
+
+def _problem_allows_empty_input(task_spec) -> bool:
+    description = f"{task_spec.problem_statement} {task_spec.constraints}".lower()
+    signals = (
+        "empty input",
+        "empty line is valid",
+        "empty line is allowed",
+        "empty line is permitted",
+        "input may be empty",
+        "input can be empty",
+        "possibly empty",
+        "empty string",
+        "empty list",
+        "zero-length",
+    )
+    return any(signal in description for signal in signals)
+
+
+def build_test_suite(data, *, allow_empty_input: bool = False, execution_mode="stdio") -> TestSuite:
+    """Validate decoded test data before it can influence a reward."""
+    if not isinstance(data, list):
+        raise ValueError("test suite must be a JSON list")
+    if not data:
+        raise ValueError("test suite cannot be empty")
+
+    mode = ExecutionMode(execution_mode)
+    cases = []
+    seen_inputs = set()
+    for index, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"test {index} must be a JSON object")
+
+        required = {"assertion", "category"} if mode == ExecutionMode.FUNCTION else REQUIRED_FIELDS
+        missing = required.difference(item)
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise ValueError(f"test {index} is missing: {names}")
+
+        if mode == ExecutionMode.FUNCTION:
+            if "input" in item or "expected_output" in item:
+                raise ValueError(f"test {index} cannot mix assertions and stdio fields")
+            assertion, category = item["assertion"], item["category"]
+            if not isinstance(assertion, str) or not assertion.strip():
+                raise ValueError(f"test {index} assertion must be non-empty native source")
+            if not isinstance(category, str) or category not in VALID_CATEGORIES:
+                raise ValueError(f"test {index} category must be normal, edge, or stress")
+            if assertion.strip() in seen_inputs:
+                raise ValueError(f"test {index} duplicates an earlier assertion")
+            seen_inputs.add(assertion.strip())
+            cases.append(FunctionTestCase(assertion=assertion, category=category))
+            continue
+        if "assertion" in item:
+            raise ValueError(f"test {index} cannot mix assertions and stdio fields")
+
+        stdin_input = item["input"]
+        expected = item["expected_output"]
+        category = item["category"]
+
+        if not isinstance(stdin_input, str):
+            raise ValueError(f"test {index} input must be exact stdin text")
+        if not stdin_input.strip() and not allow_empty_input:
+            raise ValueError(f"test {index} has empty input not allowed by the problem")
+        if expected is None:
+            raise ValueError(f"test {index} expected_output cannot be null")
+        if category not in VALID_CATEGORIES:
+            raise ValueError(
+                f"test {index} category must be normal, edge, or stress"
+            )
+        if stdin_input in seen_inputs:
+            raise ValueError(f"test {index} duplicates an earlier input")
+
+        seen_inputs.add(stdin_input)
+        cases.append(
+            TestCase(
+                input=stdin_input,
+                expected_output=expected,
+                category=category,
+            )
+        )
+
     return TestSuite(cases=cases)
+
+
+def load_test_suite(path, *, execution_mode="stdio") -> TestSuite:
+    """Load a manually verified test suite from a JSON file."""
+    test_path = Path(path)
+    try:
+        parsed = parse_json_response(test_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"Could not read trusted tests from {test_path}: {exc}") from exc
+    return build_test_suite(parsed, allow_empty_input=True, execution_mode=execution_mode)
+
+
+def generate_tests(client, task_spec, max_generation_attempts: int = 3) -> TestSuite:
+    """Generate validated tests, retrying twice after malformed responses."""
+    if max_generation_attempts < 1:
+        raise ValueError("max_generation_attempts must be at least 1")
+
+    system = """You generate executable test cases for a coding problem.
+Output ONLY a valid JSON list. Every item must contain exactly these required values:
+"input" (a string containing the exact standard-input text), "expected_output" (never null),
+and "category" (normal, edge, or stress).
+Return 3 normal cases, 2 valid edge cases, and 1 stress case. Every input must obey the problem's
+input contract. Never use empty input unless the problem explicitly allows it. Calculate every
+expected output carefully. Do not include explanations or Markdown."""
+
+    base_prompt = f"""Problem: {task_spec.problem_statement}
+Constraints: {task_spec.constraints}
+Examples: {task_spec.examples}"""
+    allow_empty_input = _problem_allows_empty_input(task_spec)
+    previous_response = ""
+    last_error = None
+
+    for attempt in range(1, max_generation_attempts + 1):
+        prompt = base_prompt
+        if last_error is not None:
+            prompt += f"""
+
+Your previous test response was rejected: {last_error}
+Previous response: {previous_response[:2000]}
+Generate the entire corrected JSON list again."""
+
+        generate_json = getattr(client, "generate_json", None)
+
+        if callable(generate_json):
+            raw = generate_json(
+                prompt,
+                system=system,
+                temperature=0.2,
+                schema=TEST_SUITE_RESPONSE_SCHEMA,
+            )
+        else:
+            raw = client.generate(
+                prompt,
+                system=system,
+                temperature=0.2,
+            )
+        try:
+            parsed = parse_json_response(raw)
+            return build_test_suite(
+                parsed,
+                allow_empty_input=allow_empty_input,
+            )
+        except (TypeError, ValueError) as exc:
+            previous_response = raw if isinstance(raw, str) else repr(raw)
+            last_error = str(exc)
+
+    raise ValueError(
+        f"Could not generate a valid test suite after {max_generation_attempts} "
+        f"attempts: {last_error}"
+    )

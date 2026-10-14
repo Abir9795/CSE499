@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "prompts": [
+    {
+      "prompt_id": "P0",
+      "prompt_text": "You are a competitive programmer. Output ONLY a complete, runnable Python solution.\nNo explanation, no markdown fences, no comments about your reasoning. Just the code.",
+      "parent_prompt_id": null,
+      "created_at": "2026-08-14T00:00:00Z",
+      "change_reason": "Initial SkillForge code-generation system prompt",
+      "status": "active",
+      "training_metrics": {},
+      "validation_metrics": {}
+    }
+  ]
+}

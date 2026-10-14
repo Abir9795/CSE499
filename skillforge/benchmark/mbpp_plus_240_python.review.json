@@ -1,0 +1,193 @@
+{
+  "benchmark_sha256": "6560e44191e0c9d567cf13f739dd51ceac2137d1b009839278f8cd818624340b",
+  "reviewer": "Codex: individual inspection of source prompts, contracts, references and converted examples",
+  "status": "completed",
+  "individual_tasks_reviewed": 20,
+  "source_inputs_preserved": 25988,
+  "cross_hash_reference_checks": 25988,
+  "cross_hash_seed": "1",
+  "review_method": "Inspected all visible assertions and representative hidden assertions for 20 tasks; executed their full visible and hidden suites with the existing SkillForge per-test subprocess runner. Additionally executed every benchmark assertion against upstream references in fresh namespaces under a different hash seed.",
+  "live_model_sweep_run": false,
+  "tasks": [
+    {
+      "task_id": "Mbpp/2",
+      "split": "train",
+      "inspection_notes": "Tuple arguments remain tuples. The intersection oracle compares sets, so duplicate removal and output ordering do not affect correctness; both intersecting and disjoint cases are present.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 107
+    },
+    {
+      "task_id": "Mbpp/3",
+      "split": "train",
+      "inspection_notes": "The predicate means non-prime, not prime. The visible boundary 1 returns True, 2 returns False, and composite stress inputs return True.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 103
+    },
+    {
+      "task_id": "Mbpp/12",
+      "split": "train",
+      "inspection_notes": "Nested lists remain lists. Rows are ordered by ascending sums with duplicates retained; negative rows and a single-row boundary are covered.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 105
+    },
+    {
+      "task_id": "Mbpp/63",
+      "split": "train",
+      "inspection_notes": "List-of-tuple restoration is essential. The oracle uses the largest absolute within-pair difference, including negative values and large integer pairs.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 120
+    },
+    {
+      "task_id": "Mbpp/82",
+      "split": "train",
+      "inspection_notes": "Sphere volume uses 4*pi*r**3/3. Positive tiny/large radii and the public math.isclose example are preserved; emitted tests retain upstream absolute tolerance 0.0001.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 104
+    },
+    {
+      "task_id": "Mbpp/94",
+      "split": "train",
+      "inspection_notes": "The result is the first field of the tuple whose second field is minimal. Tie behavior follows the first occurrence; longer tuples remain valid inputs.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 105
+    },
+    {
+      "task_id": "Mbpp/97",
+      "split": "validation",
+      "inspection_notes": "Dictionary outputs keep native integer keys. Counts flatten one list level; repeated items across sublists and large nested inputs are covered.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 102
+    },
+    {
+      "task_id": "Mbpp/106",
+      "split": "train",
+      "inspection_notes": "Inputs are a list followed by a tuple, and the result is the tuple followed by the list items. Empty inputs, nested values, and tuple output types are preserved.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 114
+    },
+    {
+      "task_id": "Mbpp/124",
+      "split": "train",
+      "inspection_notes": "Serialized complex inputs are restored before execution. The angle uses cmath.phase(a+b); signed imaginary values and tiny real parts are retained. The prompt uses math.isclose supplied by the example harness.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 108
+    },
+    {
+      "task_id": "Mbpp/129",
+      "split": "hidden",
+      "inspection_notes": "Magic-square checks compare row, column and both diagonal sums. Existing rectangular negative examples are retained; conversion does not silently strengthen the upstream square-shape precondition.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 103
+    },
+    {
+      "task_id": "Mbpp/160",
+      "split": "validation",
+      "inspection_notes": "Reference output is its first nonnegative-x solution, or None. Upstream exact tuple comparison can reject another mathematically valid pair; this inherited restriction is retained and must be considered when interpreting scores.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 102
+    },
+    {
+      "task_id": "Mbpp/240",
+      "split": "hidden",
+      "inspection_notes": "The last element of the first list is replaced by every element of the second list. The reference constructs a new list; nested lists remain native nested values.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 114
+    },
+    {
+      "task_id": "Mbpp/277",
+      "split": "train",
+      "inspection_notes": "Dictionary filtering includes values equal to the threshold. Empty dictionaries and negative thresholds are covered; reordered copies of public dictionaries are kept out of hidden evidence.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 105
+    },
+    {
+      "task_id": "Mbpp/558",
+      "split": "hidden",
+      "inspection_notes": "Unequal-length digit strings expose an upstream ambiguity: the reference zips from the left, while EvalPlus also accepts zero-padded per-digit distances. Both permitted outputs are represented.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 136
+    },
+    {
+      "task_id": "Mbpp/580",
+      "split": "hidden",
+      "inspection_notes": "Nested tuples must stay tuples recursively. Odd scalar elements are removed while nested tuple structure remains, including empty tuple boundaries and deep nesting.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 103
+    },
+    {
+      "task_id": "Mbpp/581",
+      "split": "hidden",
+      "inspection_notes": "The reference treats its second argument like slant height although the wording says height. EvalPlus also accepts the rounded geometric-height formula; conversion preserves both alternatives and the original special-oracle tolerance.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 102
+    },
+    {
+      "task_id": "Mbpp/590",
+      "split": "train",
+      "inspection_notes": "The upstream wording is incomplete: its example/reference return polar(x+iy) plus a fixed rect(2,pi) complex result. Exact nested tuple/complex equality is retained, including the small imaginary residue; no approximate tolerance was invented.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 97
+    },
+    {
+      "task_id": "Mbpp/615",
+      "split": "validation",
+      "inspection_notes": "The description says average each tuple, but its example/reference average columns via zip(*nums), truncating at the shortest tuple. The converted tests retain that behavior, empty input handling and float tolerance; this inherited ambiguity should be considered when interpreting scores.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 146
+    },
+    {
+      "task_id": "Mbpp/737",
+      "split": "train",
+      "inspection_notes": "Regex match objects are checked by non-None status, avoiding serialization of match objects. Boolean implementations are also accepted as in EvalPlus; empty and consonant-starting strings fail.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 106
+    },
+    {
+      "task_id": "Mbpp/758",
+      "split": "train",
+      "inspection_notes": "The result dictionary has tuple keys representing input sublists. Duplicates are counted and the empty input yields an empty dictionary; keys are not coerced to JSON strings.",
+      "reference_passed": true,
+      "constant_none_mutant_rejected": true,
+      "visible_runner_checks": 4,
+      "hidden_runner_checks": 112
+    }
+  ]
+}

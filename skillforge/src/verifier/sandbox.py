@@ -1,47 +1,22 @@
-import subprocess
-import tempfile
-import os
-from dataclasses import dataclass
-from enum import Enum
+"""Compatibility facade for local execution; container isolation comes later."""
 
-class Status(Enum):
-    PASS = "pass"
-    FAIL = "fail"
-    TIMEOUT = "timeout"
-    ERROR = "error"
+from typing import Any, List
 
-@dataclass
-class ExecutionResult:
-    status: Status
-    stdout: str
-    stderr: str
-    exit_code: int
+from src.benchmark.execution_mode import validate_execution
+from src.verifier.runners import get_runner
+from src.verifier.runners.base import ExecutionResult, Status, _normalize_input
 
-def run_code(code: str, stdin_input: str = "", timeout: int = 5) -> ExecutionResult:
-    if stdin_input is None:
-        stdin_input = ""
-    elif not isinstance(stdin_input, str):
-        if isinstance(stdin_input, (list, tuple)):
-            stdin_input = "\n".join(str(item) for item in stdin_input)
-        else:
-            stdin_input = str(stdin_input)
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(code)
-        path = f.name
+def run_code_many(
+    code: str, stdin_inputs: List[Any], timeout: float = 5, *,
+    language="python", execution_mode="stdio", entry_point=None,
+) -> List[ExecutionResult]:
+    """Run stdin inputs or native assertion sources against one candidate file."""
+    language, execution_mode, entry_point = validate_execution(language, execution_mode, entry_point)
+    return get_runner(language).run_many(
+        code, stdin_inputs, timeout=timeout, execution_mode=execution_mode, entry_point=entry_point,
+    )
 
-    try:
-        proc = subprocess.run(
-            ["python3", path],
-            input=stdin_input,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        status = Status.PASS if proc.returncode == 0 else Status.ERROR
-        return ExecutionResult(status, proc.stdout, proc.stderr, proc.returncode)
 
-    except subprocess.TimeoutExpired:
-        return ExecutionResult(Status.TIMEOUT, "", "Execution timed out", -1)
-    finally:
-        os.unlink(path)
+def run_code(code: str, stdin_input: Any = "", timeout: float = 5, **options) -> ExecutionResult:
+    return run_code_many(code, [stdin_input], timeout=timeout, **options)[0]

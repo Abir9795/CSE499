@@ -4,3 +4,11 @@ __pycache__/
 .env
 .DS_Store
 .pytest_cache/
+skillforge/data/*.sqlite3*
+skillforge/data/task_spec_cache/
+skillforge/data/mbpp_conversion_cache/
+*.pptx
+*.docx
+*.pdf
+*.md
+!README.md
